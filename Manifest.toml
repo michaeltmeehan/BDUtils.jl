@@ -1,0 +1,16 @@
+# This file is machine-generated - editing it directly is not advised
+
+julia_version = "1.12.6"
+manifest_format = "2.0"
+project_hash = "37dbde384ed7f00cbe4e4d8fe640c5e62047a074"
+
+[[deps.BDUtils]]
+deps = ["TreeSim"]
+path = "."
+uuid = "bc7f5a9a-21e1-4f64-8ef2-66cc3e2ef6a0"
+version = "0.1.0"
+
+[[deps.TreeSim]]
+path = "../TreeSim.jl"
+uuid = "dc327cbd-6c9b-4100-9a5f-ed0bbf0cf4d5"
+version = "0.1.0"
