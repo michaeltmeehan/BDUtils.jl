@@ -1,4 +1,25 @@
+@inline function _check_probability(name::AbstractString, x::T) where {T<:AbstractFloat}
+    isfinite(x) || throw(ArgumentError("$name must be finite."))
+    zero(T) <= x <= one(T) || throw(ArgumentError("$name must be in [0, 1]."))
+    return nothing
+end
+
+@inline function _check_constant_bd_parameters(λ::T, μ::T, ψ::T, r::T; ρ₀::Union{Nothing,T}=nothing) where {T<:AbstractFloat}
+    isfinite(λ) || throw(ArgumentError("λ must be finite."))
+    isfinite(μ) || throw(ArgumentError("μ must be finite."))
+    isfinite(ψ) || throw(ArgumentError("ψ must be finite."))
+    λ > zero(T) || throw(ArgumentError("λ must be positive for the current constant-rate birth-death formulas."))
+    μ >= zero(T) || throw(ArgumentError("μ must be non-negative."))
+    ψ >= zero(T) || throw(ArgumentError("ψ must be non-negative."))
+    _check_probability("r", r)
+    ρ₀ === nothing || _check_probability("ρ₀", ρ₀)
+    return nothing
+end
+
 @inline function bd_coefficients(w::T, λ::T, μ::T, ψ::T, r::T) where {T<:AbstractFloat}
+    isfinite(w) || throw(ArgumentError("w must be finite."))
+    _check_constant_bd_parameters(λ, μ, ψ, r)
+
     a = muladd(r * ψ, w, μ)
     b = muladd((one(T) - r) * ψ, w, -(λ + μ + ψ))
     disc = muladd(-4a, λ, b * b)

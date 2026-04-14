@@ -1,4 +1,6 @@
 @inline function E_constant(t::T, λ::T, μ::T, ψ::T; ρ₀::T=zero(T)) where {T<:AbstractFloat}
+    isfinite(t) || throw(ArgumentError("t must be finite."))
+    _check_constant_bd_parameters(λ, μ, ψ, zero(T); ρ₀=ρ₀)
     t <= zero(T) && return one(T) - ρ₀
 
     δ = λ + μ + ψ
@@ -25,6 +27,8 @@ end
 end
 
 @inline function g_constant(t::T, λ::T, μ::T, ψ::T; ρ₀::T=zero(T)) where {T<:AbstractFloat}
+    isfinite(t) || throw(ArgumentError("t must be finite."))
+    _check_constant_bd_parameters(λ, μ, ψ, zero(T); ρ₀=ρ₀)
     t <= zero(T) && return zero(T)
 
     δ = λ + μ + ψ
@@ -57,7 +61,32 @@ end
     return logaddexp(T(a), T(b))
 end
 
+"""
+    bd_loglikelihood_constant(tree::TreeSim.Tree, λ, μ, ψ, r; ρ₀=0)
+
+Compute the log likelihood for the currently supported constant-rate sampled
+birth-death core.
+
+Supported model assumptions:
+
+- constant birth rate `λ > 0`, death rate `μ >= 0`, and sampling rate `ψ > 0`
+- sampled individuals are removed with probability `r in [0, 1]`
+- optional contemporaneous sampling probability `ρ₀ in [0, 1]`
+- the root contribution is conditioned through `log(1 - E(T))`, where `T` is
+  the maximum node time in the tree and `E` is `E_constant`
+
+`TreeSim.validate_tree` defines structural tree validity. This likelihood adds
+stricter analytical admissibility rules: the tree must be non-empty, have a
+single reachable root, finite times, at least one sampled node, and contain only
+`Root`, `Binary`, `SampledLeaf`, and `SampledUnary` nodes. In particular,
+`TreeSim.UnsampledUnary` is structurally valid in `TreeSim.jl` but unsupported
+by this analytical likelihood.
+"""
 function bd_loglikelihood_constant(tree::TreeSim.Tree, λ::T, μ::T, ψ::T, r::T; ρ₀::T=zero(T)) where {T<:AbstractFloat}
+    _check_constant_bd_parameters(λ, μ, ψ, r; ρ₀=ρ₀)
+    ψ > zero(T) || throw(ArgumentError("ψ must be positive for sampled-tree likelihood evaluation."))
+    _check_constant_likelihood_tree(tree)
+
     Tfinal = maximum(tree.time)
 
     log_λ = log(λ)
@@ -95,4 +124,26 @@ end
 function bd_loglikelihood_constant(tree::TreeSim.Tree, λ::Real, μ::Real, ψ::Real, r::Real; ρ₀::Real=0.0)
     T = promote_type(typeof(λ), typeof(μ), typeof(ψ), typeof(r), typeof(ρ₀), Float64)
     return bd_loglikelihood_constant(tree, T(λ), T(μ), T(ψ), T(r); ρ₀=T(ρ₀))
+end
+
+function _check_constant_likelihood_tree(tree::TreeSim.Tree)
+    isempty(tree.time) && throw(ArgumentError("tree must be non-empty."))
+
+    try
+        TreeSim.validate_tree(tree; require_single_root=true, require_reachable=true)
+    catch err
+        throw(ArgumentError("tree is not structurally valid for likelihood evaluation: $(sprint(showerror, err))"))
+    end
+
+    all(isfinite, tree.time) || throw(ArgumentError("tree times must be finite."))
+
+    supported = (TreeSim.Root, TreeSim.Binary, TreeSim.SampledLeaf, TreeSim.SampledUnary)
+    for (i, kind) in pairs(tree.kind)
+        kind in supported || throw(ArgumentError("node $i has kind $kind, which is not supported by the constant-rate analytical likelihood."))
+    end
+
+    any(k -> k == TreeSim.SampledLeaf || k == TreeSim.SampledUnary, tree.kind) ||
+        throw(ArgumentError("tree must contain at least one sampled node."))
+
+    return nothing
 end
