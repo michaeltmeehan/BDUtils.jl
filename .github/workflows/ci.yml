@@ -1,0 +1,49 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  test:
+    name: Julia ${{ matrix.julia-version }}
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        julia-version:
+          - '1.11'
+          - '1.12'
+
+    steps:
+      - name: Checkout BDUtils.jl
+        uses: actions/checkout@v4
+        with:
+          path: BDUtils.jl
+
+      - name: Checkout TreeSim.jl
+        uses: actions/checkout@v4
+        with:
+          repository: michaeltmeehan/TreeSim.jl
+          path: TreeSim.jl
+
+      - name: Set up Julia
+        uses: julia-actions/setup-julia@v2
+        with:
+          version: ${{ matrix.julia-version }}
+
+      - name: Cache Julia artifacts
+        uses: julia-actions/cache@v2
+
+      - name: Instantiate dependencies
+        working-directory: BDUtils.jl
+        run: julia --project=. -e 'using Pkg; Pkg.instantiate()'
+
+      - name: Run tests
+        working-directory: BDUtils.jl
+        run: julia --project=. -e 'using Pkg; Pkg.test()'
