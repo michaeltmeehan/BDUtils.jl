@@ -4,6 +4,7 @@ authors = ["michaeltmeehan <michael.meehan1@jcu.edu.au>"]
 version = "0.1.0"
 
 [deps]
+LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
 TreeSim = "dc327cbd-6c9b-4100-9a5f-ed0bbf0cf4d5"
 
 [compat]

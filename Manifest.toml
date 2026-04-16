@@ -2,15 +2,49 @@
 
 julia_version = "1.12.6"
 manifest_format = "2.0"
-project_hash = "37dbde384ed7f00cbe4e4d8fe640c5e62047a074"
+project_hash = "a3dd7343a278d858dadc3676aabff338eda60fa0"
+
+[[deps.Artifacts]]
+uuid = "56f22d72-fd6d-98f1-02f0-08ddc0907c33"
+version = "1.11.0"
 
 [[deps.BDUtils]]
-deps = ["TreeSim"]
+deps = ["LinearAlgebra", "TreeSim"]
 path = "."
 uuid = "bc7f5a9a-21e1-4f64-8ef2-66cc3e2ef6a0"
 version = "0.1.0"
+
+[[deps.CompilerSupportLibraries_jll]]
+deps = ["Artifacts", "Libdl"]
+uuid = "e66e0078-7015-5450-92f7-15fbd957f2ae"
+version = "1.3.0+1"
+
+[[deps.Libdl]]
+uuid = "8f399da3-3557-5675-b5ff-fb832c97cbdb"
+version = "1.11.0"
+
+[[deps.LinearAlgebra]]
+deps = ["Libdl", "OpenBLAS_jll", "libblastrampoline_jll"]
+uuid = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
+version = "1.12.0"
+
+[[deps.OpenBLAS_jll]]
+deps = ["Artifacts", "CompilerSupportLibraries_jll", "Libdl"]
+uuid = "4536629a-c528-5b80-bd46-f80d51c5b363"
+version = "0.3.29+0"
 
 [[deps.TreeSim]]
 path = "../TreeSim.jl"
 uuid = "dc327cbd-6c9b-4100-9a5f-ed0bbf0cf4d5"
 version = "0.1.0"
+
+    [deps.TreeSim.extensions]
+    EpiSimExt = "EpiSim"
+
+    [deps.TreeSim.weakdeps]
+    EpiSim = "baf66cd8-34c1-424a-92fd-19e59a9b7bce"
+
+[[deps.libblastrampoline_jll]]
+deps = ["Artifacts", "Libdl"]
+uuid = "8e850b90-86db-534c-a0d3-1478176c7d93"
+version = "5.15.0+0"
