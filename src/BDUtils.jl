@@ -6,6 +6,7 @@ using Random
 
 include("parameters.jl")
 include("simulation.jl")
+include("treesim_bridge.jl")
 include("pgf.jl")
 include("likelihood_constant.jl")
 include("fit_constant.jl")
@@ -30,6 +31,7 @@ export ConstantRateBDParameters,
        retained_lineages_at,
        A_at,
        A_over_time,
+       full_forest_from_eventlog,
        joint_counts_NS,
        joint_pmf_NS,
        marginal_counts_NS,
