@@ -6,6 +6,9 @@ using Random
 
 include("parameters.jl")
 include("simulation.jl")
+include("multitype/types.jl")
+include("multitype/simulation.jl")
+include("multitype/empirical.jl")
 include("treesim_bridge.jl")
 include("pgf.jl")
 include("tree_statistics.jl")
@@ -21,7 +24,25 @@ export ConstantRateBDParameters,
        SerialSampling,
        BDEventLog,
        BDEventRecord,
+       MultitypeBDParameters,
+       MultitypeBDEventKind,
+       MultitypeBirth,
+       MultitypeDeath,
+       MultitypeFossilizedSampling,
+       MultitypeSerialSampling,
+       MultitypeTransition,
+       MultitypeBDEventLog,
+       MultitypeBDEventRecord,
        simulate_bd,
+       simulate_multitype_bd,
+       multitype_NS_at,
+       multitype_N_at,
+       multitype_S_at,
+       multitype_NS_over_time,
+       multitype_N_over_time,
+       multitype_S_over_time,
+       multitype_mean_N,
+       validate_multitype_eventlog,
        NS_at,
        N_at,
        S_at,

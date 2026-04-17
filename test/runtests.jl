@@ -499,6 +499,97 @@ const PGF_T_PAIRS = ((0.1, 0.6), (0.3, 1.4), (0.8, 2.2))
         @test_throws ArgumentError empirical_retention_probability([extinct_unsampled], 0.5)
     end
 
+    @testset "multitype simulation foundation" begin
+        pars_mt = MultitypeBDParameters(
+            [0.0 1.0; 0.5 0.0],
+            [0.1, 0.2],
+            [0.3, 0.4],
+            [0.0, 1.0],
+            [0.0 0.7; 0.2 0.0],
+            [0.0, 0.0],
+        )
+        @test length(pars_mt) == 2
+        @test sprint(show, pars_mt) == "MultitypeBDParameters(K=2)"
+
+        handcrafted_mt = MultitypeBDEventLog(
+            [0.2, 0.3, 0.4, 0.5, 0.6],
+            [2, 1, 2, 2, 1],
+            [1, 0, 0, 0, 0],
+            [MultitypeBirth, MultitypeTransition, MultitypeFossilizedSampling,
+             MultitypeSerialSampling, MultitypeDeath],
+            [1, 1, 2, 2, 2],
+            [2, 2, 2, 2, 2],
+            [1],
+            1.0,
+        )
+        @test length(handcrafted_mt) == 5
+        @test handcrafted_mt[1] == MultitypeBDEventRecord(0.2, 2, 1, MultitypeBirth, 1, 2)
+        @test collect(record.kind for record in handcrafted_mt) == [
+            MultitypeBirth,
+            MultitypeTransition,
+            MultitypeFossilizedSampling,
+            MultitypeSerialSampling,
+            MultitypeDeath,
+        ]
+        @test sprint(show, handcrafted_mt) == "MultitypeBDEventLog(5 events, K=2, initial_lineages=1, tmax=1.0)"
+        @test validate_multitype_eventlog(handcrafted_mt)
+
+        @test multitype_NS_at(handcrafted_mt, 0.0) == (N=[1, 0], S=[0, 0])
+        @test multitype_NS_at(handcrafted_mt, 0.2) == (N=[1, 1], S=[0, 0])
+        @test multitype_NS_at(handcrafted_mt, 0.35) == (N=[0, 2], S=[0, 0])
+        @test multitype_NS_at(handcrafted_mt, 0.45) == (N=[0, 2], S=[0, 1])
+        @test multitype_NS_at(handcrafted_mt, 1.0) == (N=[0, 0], S=[0, 2])
+        @test multitype_N_at(handcrafted_mt, 0.35) == [0, 2]
+        @test multitype_S_at(handcrafted_mt, 1.0) == [0, 2]
+        @test multitype_N_over_time(handcrafted_mt, [0.0, 0.35, 1.0]) == [[1, 0], [0, 2], [0, 0]]
+        @test multitype_S_over_time(handcrafted_mt, [0.0, 0.45, 1.0]) == [[0, 0], [0, 1], [0, 2]]
+        @test multitype_mean_N([handcrafted_mt, handcrafted_mt], 0.35) == [0.0, 2.0]
+
+        zero_mt = simulate_multitype_bd(
+            MersenneTwister(11),
+            MultitypeBDParameters(zeros(2, 2), zeros(2), zeros(2), zeros(2), zeros(2, 2), zeros(2)),
+            1.0;
+            initial_types=[1, 2],
+        )
+        @test isempty(zero_mt)
+        @test multitype_N_at(zero_mt, 1.0) == [1, 1]
+        @test multitype_S_at(zero_mt, 1.0) == [0, 0]
+        @test validate_multitype_eventlog(zero_mt)
+
+        transition_only = simulate_multitype_bd(
+            MersenneTwister(12),
+            MultitypeBDParameters(zeros(2, 2), zeros(2), zeros(2), zeros(2), [0.0 20.0; 0.0 0.0], zeros(2)),
+            0.5;
+            initial_types=[1],
+        )
+        @test all(==(MultitypeTransition), transition_only.kind)
+        @test validate_multitype_eventlog(transition_only)
+        @test sum(multitype_N_at(transition_only, 0.5)) == 1
+
+        k1_pars = MultitypeBDParameters([1.0;;], [0.0], [0.0], [0.0], [0.0;;], [0.0])
+        k1_log = simulate_multitype_bd(MersenneTwister(1), k1_pars, 0.5)
+        @test all(==(MultitypeBirth), k1_log.kind)
+        @test validate_multitype_eventlog(k1_log)
+        @test multitype_N_at(k1_log, 0.5) == [1 + length(k1_log)]
+        @test multitype_S_at(k1_log, 0.5) == [0]
+
+        sampled_k1 = simulate_multitype_bd(
+            MersenneTwister(3),
+            MultitypeBDParameters([0.0;;], [0.0], [0.0], [1.0], [0.0;;], [1.0]),
+            0.0,
+        )
+        @test sampled_k1.kind == [MultitypeSerialSampling]
+        @test multitype_NS_at(sampled_k1, 0.0) == (N=[0], S=[1])
+
+        bad_mt = MultitypeBDEventLog([0.1], [1], [0], [MultitypeDeath], [2], [2], [1], 1.0)
+        @test_throws ArgumentError validate_multitype_eventlog(bad_mt)
+        @test_throws ArgumentError MultitypeBDParameters(zeros(2, 2), zeros(1), zeros(1), zeros(1), zeros(2, 2))
+        @test_throws ArgumentError MultitypeBDParameters([-1.0;;], [0.0], [0.0], [0.0], [0.0;;])
+        @test_throws ArgumentError simulate_multitype_bd(k1_pars, 1.0; initial_types=[2])
+        @test_throws ArgumentError multitype_NS_at(handcrafted_mt, -0.1)
+        @test_throws ArgumentError multitype_mean_N(MultitypeBDEventLog[], 0.0)
+    end
+
     @testset "TreeSim reconstructed extraction from BDEventLog" begin
         simple = BDEventLog([0.2, 0.5, 0.7], [2, 1, 2], [1, 0, 0], [Birth, FossilizedSampling, SerialSampling], 1, 1.0)
 
