@@ -63,8 +63,10 @@ function report(label, x, y; atol=1e-10, rtol=1e-8)
     return ok
 end
 
-bd_p0(t, lambda, mu, psi, rho0) = E_constant(t, lambda, mu, psi; ρ₀=rho0)
-bd_p1(t, lambda, mu, psi, rho0) = rho0 * exp(g_constant(t, lambda, mu, psi; ρ₀=rho0))
+bd_params(lambda, mu, psi, rho0; r = 1.0) = ConstantRateBDParameters(lambda, mu, psi, r, rho0)
+
+bd_p0(t, lambda, mu, psi, rho0) = E_constant(t, bd_params(lambda, mu, psi, rho0))
+bd_p1(t, lambda, mu, psi, rho0) = rho0 * exp(g_constant(t, bd_params(lambda, mu, psi, rho0)))
 
 function treepar_grid()
     return [
@@ -159,8 +161,9 @@ function check_ode_identities()
     mismatches = 0
 
     for (t, lambda, mu, psi, rho0) in ode_grid()
-        E(tval) = E_constant(tval, lambda, mu, psi; ρ₀=rho0)
-        g(tval) = g_constant(tval, lambda, mu, psi; ρ₀=rho0)
+        pars = bd_params(lambda, mu, psi, rho0)
+        E(tval) = E_constant(tval, pars)
+        g(tval) = g_constant(tval, pars)
 
         e = E(t)
         dE_num = central_difference(E, t)
@@ -263,16 +266,17 @@ function treepar_likshift_loglik(lambda, mu, psi, rho0, times, ttype; root, surv
 end
 
 function validation_loglikelihood(tree::TreeSim.Tree, lambda, mu, psi, ::CurrentBDUtilsConditioning; rho0 = 0.0)
-    return bd_loglikelihood_constant(tree, lambda, mu, psi, 1.0; ρ₀ = rho0)
+    return bd_loglikelihood_constant(tree, bd_params(lambda, mu, psi, rho0))
 end
 
 function validation_loglikelihood(tree::TreeSim.Tree, lambda, mu, psi, ::NoConditioning; rho0 = 0.0)
-    terms = bd_likelihood_terms(tree, lambda, mu, psi, rho0)
+    terms = bd_likelihood_terms(tree, bd_params(lambda, mu, psi, rho0))
     return diagnostic_total(terms; root = :root_none, branch = :lambda)
 end
 
 function validation_loglikelihood(tree::TreeSim.Tree, lambda, mu, psi,
                                   conditioning::TreeParLikShiftsSTTConditioning; rho0 = 0.0)
+    pars = bd_params(lambda, mu, psi, rho0)
     times, ttype, _ = restricted_events(tree, conditioning)
     transmission = times[ttype .== 1]
     sampling = times[ttype .== 0]
@@ -291,47 +295,47 @@ function validation_loglikelihood(tree::TreeSim.Tree, lambda, mu, psi,
     oldest_transmission = maximum(transmission)
     loglik = -(conditioning.root + 1) * log(2lambda)
     if conditioning.survival == 1
-        loglik -= (conditioning.root + 1) * log1p(-E_constant(oldest_transmission, lambda, mu, psi; ρ₀ = rho0))
+        loglik -= (conditioning.root + 1) * log1p(-E_constant(oldest_transmission, pars))
     elseif conditioning.survival != 0
         error("TreePar survival flag must be 0 or 1.")
     end
 
     for t in transmission
-        loglik += g_constant(t, lambda, mu, psi; ρ₀ = rho0) + log(2lambda)
+        loglik += g_constant(t, pars) + log(2lambda)
     end
 
     for t in sampling
-        loglik += -g_constant(t, lambda, mu, psi; ρ₀ = rho0) + log(psi)
+        loglik += -g_constant(t, pars) + log(psi)
     end
 
     loglik -= (length(transmission) - 1 - conditioning.root) * log(2)
     return loglik
 end
 
-function bd_likelihood_terms(tree::TreeSim.Tree, lambda, mu, psi, rho0)
+function bd_likelihood_terms(tree::TreeSim.Tree, pars::ConstantRateBDParameters)
     Tfinal = maximum(tree.time)
-    root_term = log1p(-E_constant(Tfinal, lambda, mu, psi; ρ₀=rho0))
+    root_term = log1p(-E_constant(Tfinal, pars))
     binary_terms = NamedTuple[]
     leaf_terms = NamedTuple[]
 
     for node in tree
         tau = Tfinal - node.time
         if node.kind == Binary
-            g = g_constant(tau, lambda, mu, psi; ρ₀=rho0)
+            g = g_constant(tau, pars)
             push!(binary_terms, (
                 id = node.id,
                 time = node.time,
                 tau = tau,
-                base = log(lambda) + g,
-                doubled = log(2lambda) + g,
+                base = log(pars.λ) + g,
+                doubled = log(2pars.λ) + g,
             ))
         elseif node.kind == SampledLeaf
-            g = g_constant(tau, lambda, mu, psi; ρ₀=rho0)
+            g = g_constant(tau, pars)
             push!(leaf_terms, (
                 id = node.id,
                 time = node.time,
                 tau = tau,
-                base = log(psi) - g,
+                base = log(pars.ψ) - g,
             ))
         elseif node.kind != Root
             error("Restricted diagnostic does not support $(node.kind).")
@@ -341,7 +345,7 @@ function bd_likelihood_terms(tree::TreeSim.Tree, lambda, mu, psi, rho0)
     return (
         root_current = root_term,
         root_none = 0.0,
-        root_plus_loglambda = root_term + log(lambda),
+        root_plus_loglambda = root_term + log(pars.λ),
         root_double_survival = 2root_term,
         root_treepar_survival0 = 0.0,
         root_treepar_survival1 = root_term,
@@ -427,8 +431,9 @@ function compare_restricted_likshiftstt()
     aligned_close = 0
 
     for (name, tree, lambda, mu, psi, rho0) in cases
-        terms = bd_likelihood_terms(tree, lambda, mu, psi, rho0)
-        bd = bd_loglikelihood_constant(tree, lambda, mu, psi, 1.0; ρ₀=rho0)
+        pars = bd_params(lambda, mu, psi, rho0)
+        terms = bd_likelihood_terms(tree, pars)
+        bd = bd_loglikelihood_constant(tree, pars)
         println("\n$name BDUtils logL=", @sprintf("%.12g", bd),
                 "  lambda=$lambda mu=$mu psi=$psi rho0=$rho0")
         print_bd_term_breakdown(terms)

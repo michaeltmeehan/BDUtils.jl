@@ -8,8 +8,10 @@ validation record only; it does not define public API.
 In the present-day incomplete-sampling regime, the helper-level mapping is:
 
 ```text
-BDUtils E_constant(t, lambda, mu, psi = 0; rho0) == TreePar p0(t, lambda, mu, rho)
-rho0 * exp(BDUtils g_constant(t, lambda, mu, psi = 0; rho0)) == TreePar p1(t, lambda, mu, rho)
+With `pars = ConstantRateBDParameters(lambda, mu, 0.0, r, rho0)`:
+
+BDUtils E_constant(t, pars) == TreePar p0(t, lambda, mu, rho)
+rho0 * exp(BDUtils g_constant(t, pars)) == TreePar p1(t, lambda, mu, rho)
 ```
 
 The validation harness checks this mapping across short, moderate, and larger

@@ -63,7 +63,7 @@ _parameter_transform(param::AbstractBDParameterization, θ) = _tuple_to_vector(b
 
 function _bd_negloglikelihood(θ::AbstractVector{T}, tree::TreeSim.Tree, param::AbstractBDParameterization; r, ρ₀=zero(T)) where {T<:Real}
     λ, μ, ψ = expand_rates(param, θ)
-    ll = bd_loglikelihood_constant(tree, λ, μ, ψ, T(r); ρ₀=T(ρ₀))
+    ll = bd_loglikelihood_constant(tree, ConstantRateBDParameters(λ, μ, ψ, T(r), T(ρ₀)))
     return isfinite(ll) ? -ll : T(1e12)
 end
 
@@ -83,6 +83,15 @@ function (obj::BDConstantObjective)(θ::AbstractVector{T}) where {T<:Real}
     end
 end
 
+"""
+    fit_bd_full(tree; param, r, ρ₀=0.0, θ_init=zeros(2))
+
+Fit the supported constant-rate birth-death-sampling likelihood.
+
+The result preserves the historical `rates = (λ, μ, ψ)` and `parameters`
+fields, and also includes `constant_rates::ConstantRateBDParameters`, the
+canonical fitted constant-rate parameter object including `r` and `ρ₀`.
+"""
 function fit_bd_full(
     tree::TreeSim.Tree;
     param::AbstractBDParameterization,
@@ -109,6 +118,7 @@ function fit_bd_full(
     J = _finite_jacobian(θ -> _parameter_transform(param, θ), θ̂)
     vcov_param = J * vcov_θ * J'
     se_param = sqrt.(max.(diag(vcov_param), 0.0))
+    constant_rates = ConstantRateBDParameters(λ̂, μ̂, ψ̂, Float64(r), Float64(ρ₀))
     return (
         result=result,
         θ̂=θ̂,
@@ -117,6 +127,7 @@ function fit_bd_full(
         vcov_θ=vcov_θ,
         se_θ=se_θ,
         rates=(λ=λ̂, μ=μ̂, ψ=ψ̂),
+        constant_rates=constant_rates,
         parameters=params,
         vcov_parameters=vcov_param,
         se_parameters=se_param,

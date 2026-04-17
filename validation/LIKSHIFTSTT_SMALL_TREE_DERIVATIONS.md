@@ -19,8 +19,9 @@ Restrictions:
 
 Definitions:
 
-- `E(t) = E_constant(t, lambda, mu, psi; rho0)`
-- `g(t) = g_constant(t, lambda, mu, psi; rho0)`
+- `pars = ConstantRateBDParameters(lambda, mu, psi, r, rho0)`
+- `E(t) = E_constant(t, pars)`
+- `g(t) = g_constant(t, pars)`
 - `S(t) = log(1 - E(t))`
 - a sampled-leaf contribution at time-before-present `u` is `A(u) = log(psi) - g(u)`
 
