@@ -95,6 +95,89 @@ function table_pgf_sum(table, z, w)
     return total
 end
 
+function total_variation_on_support(empirical::Dict, analytical::Dict, support)
+    return 0.5 * sum(abs(get(empirical, key, 0.0) - get(analytical, key, 0.0)) for key in support)
+end
+
+function max_abs_error_on_support(empirical::Dict, analytical::Dict, support)
+    isempty(support) && return 0.0
+    return maximum(abs(get(empirical, key, 0.0) - get(analytical, key, 0.0)) for key in support)
+end
+
+function simulate_original_process(seed, pars, tmax, nsims)
+    rng = MersenneTwister(seed)
+    return [simulate_bd(rng, pars, tmax; apply_ρ₀=false) for _ in 1:nsims]
+end
+
+function analytical_joint_dict(table)
+    return Dict((n - 1, s - 1) => table[n, s] for n in axes(table, 1), s in axes(table, 2))
+end
+
+function analytical_marginal_dict(values)
+    return Dict(i - 1 => values[i] for i in eachindex(values))
+end
+
+function original_process_validation_summary(seed, pars, tj, nsims; tail_atol=2e-4, max_smax=1_000)
+    logs = simulate_original_process(seed, pars, tj, nsims)
+    nmax = n_truncation(0.0, tj, pars; atol=tail_atol)
+    smax = s_truncation(0.0, tj, pars; atol=tail_atol, max_smax=max_smax)
+    diagnostic = joint_pmf_NS_table(nmax, smax, 0.0, tj, pars; diagnostics=true)
+    analytical_joint = analytical_joint_dict(diagnostic.table)
+    support = collect(keys(analytical_joint))
+
+    empirical_counts = joint_counts_NS(logs, tj)
+    empirical_joint = joint_pmf_NS(empirical_counts)
+    empirical_marginals = marginal_pmf_NS(empirical_counts)
+
+    analytical_n = analytical_marginal_dict([n_marginal_pmf(n, 0.0, tj, pars) for n in 0:nmax])
+    analytical_s = analytical_marginal_dict([s_marginal_pmf(s, 0.0, tj, pars) for s in 0:smax])
+    n_support = collect(keys(analytical_n))
+    s_support = collect(keys(analytical_s))
+
+    empirical_retained = sum(get(empirical_joint, key, 0.0) for key in support)
+    empirical_n_retained = sum(get(empirical_marginals.N, n, 0.0) for n in n_support)
+    empirical_s_retained = sum(get(empirical_marginals.S, s, 0.0) for s in s_support)
+
+    return (
+        diagnostic=diagnostic,
+        empirical_joint=empirical_joint,
+        analytical_joint=analytical_joint,
+        empirical_marginals=empirical_marginals,
+        analytical_n=analytical_n,
+        analytical_s=analytical_s,
+        support=support,
+        n_support=n_support,
+        s_support=s_support,
+        empirical_retained=empirical_retained,
+        empirical_n_retained=empirical_n_retained,
+        empirical_s_retained=empirical_s_retained,
+        joint_tv=total_variation_on_support(empirical_joint, analytical_joint, support),
+        joint_maxerr=max_abs_error_on_support(empirical_joint, analytical_joint, support),
+        n_tv=total_variation_on_support(empirical_marginals.N, analytical_n, n_support),
+        n_maxerr=max_abs_error_on_support(empirical_marginals.N, analytical_n, n_support),
+        s_tv=total_variation_on_support(empirical_marginals.S, analytical_s, s_support),
+        s_maxerr=max_abs_error_on_support(empirical_marginals.S, analytical_s, s_support),
+    )
+end
+
+function assert_original_process_validation(summary;
+                                            joint_tv_atol,
+                                            marginal_tv_atol,
+                                            maxerr_atol,
+                                            tail_slack)
+    @test summary.diagnostic.retained_mass >= 1.0 - summary.diagnostic.n_tail_mass - summary.diagnostic.s_tail_mass - 1e-10
+    @test summary.diagnostic.retained_mass <= 1.0 + 1e-10
+    @test abs(summary.empirical_retained - summary.diagnostic.retained_mass) <= tail_slack
+    @test abs(summary.empirical_n_retained - (1 - summary.diagnostic.n_tail_mass)) <= tail_slack
+    @test abs(summary.empirical_s_retained - (1 - summary.diagnostic.s_tail_mass)) <= tail_slack
+    @test summary.joint_tv <= joint_tv_atol
+    @test summary.n_tv <= marginal_tv_atol
+    @test summary.s_tv <= marginal_tv_atol
+    @test summary.joint_maxerr <= maxerr_atol
+    @test summary.n_maxerr <= maxerr_atol
+    @test summary.s_maxerr <= maxerr_atol
+end
+
 # Constant-rate analytical regression fixtures.
 #
 # Core invariants protected below:
@@ -392,6 +475,69 @@ const PGF_T_PAIRS = ((0.1, 0.6), (0.3, 1.4), (0.8, 2.2))
         @test_throws ArgumentError s_truncation(ti, tj, pars; atol=NaN)
         @test_throws ArgumentError s_truncation(ti, tj, pars; atol=1e-14, max_smax=0)
         @test_throws ArgumentError n_truncation(ti, tj, pars; atol=-1.0)
+    end
+
+    @testset "simulation validation: original-process NS distribution" begin
+        cases = (
+            (name="subcritical_low_sampling", seed=11, pars=ConstantRateBDParameters(0.7, 1.0, 0.12, 0.35), tj=1.1, nsims=8_000),
+            (name="near_critical_r_zero", seed=12, pars=ConstantRateBDParameters(1.0, 0.92, 0.35, 0.0), tj=0.9, nsims=8_000),
+            (name="supercritical_high_sampling", seed=13, pars=ConstantRateBDParameters(1.45, 0.55, 0.9, 0.9), tj=0.8, nsims=8_000),
+            (name="no_sampling_supported", seed=14, pars=ConstantRateBDParameters(1.25, 0.8, 0.0, 0.0), tj=0.9, nsims=8_000),
+        )
+
+        for case in cases
+            summary = original_process_validation_summary(case.seed, case.pars, case.tj, case.nsims; tail_atol=1e-4)
+            assert_original_process_validation(summary;
+                joint_tv_atol=0.025,
+                marginal_tv_atol=0.022,
+                maxerr_atol=0.018,
+                tail_slack=0.018,
+            )
+        end
+    end
+
+    @testset "simulation validation: original-process multi-time queries" begin
+        multi_pars = ConstantRateBDParameters(1.1, 0.75, 0.35, 0.65)
+        times = [0.35, 0.75, 1.1]
+        logs = simulate_original_process(21, multi_pars, maximum(times), 7_000)
+
+        for (i, tj) in pairs(times)
+            summary = original_process_validation_summary(30 + i, multi_pars, tj, 7_000; tail_atol=1e-4)
+            empirical_from_shared_logs = joint_pmf_NS(joint_counts_NS(logs, tj))
+            @test total_variation_on_support(empirical_from_shared_logs, summary.analytical_joint, summary.support) <= 0.03
+            @test abs(sum(get(empirical_from_shared_logs, key, 0.0) for key in summary.support) -
+                      summary.diagnostic.retained_mass) <= 0.02
+            assert_original_process_validation(summary;
+                joint_tv_atol=0.03,
+                marginal_tv_atol=0.026,
+                maxerr_atol=0.02,
+                tail_slack=0.02,
+            )
+        end
+
+        count_series = joint_counts_NS(logs, times)
+        @test length(count_series) == length(times)
+        @test all(counts -> sum(values(counts)) == length(logs), count_series)
+    end
+
+    if get(ENV, "BDUTILS_STRESS_TESTS", "false") == "true"
+        @testset "stress: simulation validation original-process NS distribution" begin
+            stress_cases = (
+                (name="subcritical_high_removal", seed=101, pars=ConstantRateBDParameters(0.65, 1.15, 0.7, 0.98), tj=1.5, nsims=30_000),
+                (name="near_critical_low_sampling", seed=102, pars=ConstantRateBDParameters(1.02, 0.98, 0.04, 0.4), tj=1.4, nsims=30_000),
+                (name="supercritical_r_near_one", seed=103, pars=ConstantRateBDParameters(1.6, 0.4, 0.55, 0.99), tj=1.0, nsims=30_000),
+            )
+
+            for case in stress_cases
+                summary = original_process_validation_summary(case.seed, case.pars, case.tj, case.nsims; tail_atol=5e-5, max_smax=2_000)
+                assert_original_process_validation(summary;
+                    joint_tv_atol=0.018,
+                    marginal_tv_atol=0.015,
+                    maxerr_atol=0.011,
+                    tail_slack=0.011,
+                )
+            end
+        end
     end
 
     # Extended analytical stress checks: same invariants under numerically
