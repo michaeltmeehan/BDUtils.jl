@@ -1,6 +1,7 @@
 using Test
 using BDUtils
 using TreeSim
+using Random
 
 function tiny_tree()
     return Tree(
@@ -37,6 +38,107 @@ function root_only_tree()
         [0],
     )
 end
+
+function scalar_joint_pgf(z, w, ti, tj, pars)
+    γw = gamma_bd(w, ti, tj, pars)
+    return alpha_bd(w, ti, tj, pars) + beta_bd(w, ti, tj, pars) * z / (1 - γw * z)
+end
+
+bd_a(w, pars) = pars.μ + pars.r * pars.ψ * w
+bd_b_backward(w, pars) = -(pars.λ + bd_a(w, pars) + pars.ψ * (1 - w))
+
+function backward_generator(y, w, pars)
+    return (y - 1) * (pars.λ * y - bd_a(w, pars)) - pars.ψ * (1 - w) * y
+end
+
+function p_unsampled(tj, tk, pars)
+    γ0 = gamma_bd(0.0, tj, tk, pars)
+    return 1 - pars.ψ / pars.λ * γ0 / (1 - γ0)
+end
+
+function transformed_rates(tj, tk, pars)
+    p = p_unsampled(tj, tk, pars)
+    one_minus_p = 1 - p
+    return (
+        λ=pars.λ * one_minus_p,
+        μ=pars.ψ * (pars.r + (1 - pars.r) * p) / one_minus_p,
+        ψ=pars.ψ / one_minus_p,
+    )
+end
+
+function transformed_alpha_beta_gamma(w, ti, tj, tk, pars)
+    p = p_unsampled(tj, tk, pars)
+    αij = alpha_bd(w, ti, tj, pars)
+    βij = beta_bd(w, ti, tj, pars)
+    γij = gamma_bd(w, ti, tj, pars)
+    den = 1 - γij * p
+    return (
+        α=αij + βij * p / den,
+        β=βij * (1 - p) / den^2,
+        γ=1 - (1 - γij) / den,
+    )
+end
+
+function central_first_derivative(f, x; h=1e-5)
+    return (f(x + h) - f(x - h)) / (2h)
+end
+
+function central_second_derivative(f, x; h=1e-4)
+    return (f(x + h) - 2f(x) + f(x - h)) / (h^2)
+end
+
+function table_pgf_sum(table, z, w)
+    total = zero(eltype(table))
+    for n in 0:(size(table, 1) - 1), s in 0:(size(table, 2) - 1)
+        total += table[n + 1, s + 1] * z^n * w^s
+    end
+    return total
+end
+
+# Constant-rate analytical regression fixtures.
+#
+# Core invariants protected below:
+# - closed-form α/β/γ agree with their formal power-series coefficients,
+# - joint PMF tables agree with scalar PMFs, marginals, tails, and PGFs,
+# - forward and backward triangular ODE residuals vanish,
+# - scalar PGF residuals satisfy the backward Kolmogorov equation,
+# - Kendall, Riccati, and transformed-rate identities remain coherent.
+#
+# The stress grid intentionally spans small/large intervals, near-critical
+# dynamics, low/no sampling, r = 0, and high sampling/removal cases.
+const ODE_REGIMES = (
+    ConstantRateBDParameters(0.9, 1.1, 0.4, 0.6),
+    ConstantRateBDParameters(1.02, 0.8, 0.4, 0.5),
+    ConstantRateBDParameters(1.8, 0.5, 0.7, 0.4),
+    ConstantRateBDParameters(1.3, 0.6, 0.0, 0.0),
+    ConstantRateBDParameters(1.4, 0.6, 0.7, 0.0),
+    ConstantRateBDParameters(1.5, 0.2, 2.5, 0.95),
+)
+
+const KENDALL_REGIMES = (
+    ODE_REGIMES[1],
+    ODE_REGIMES[2],
+    ODE_REGIMES[3],
+    ODE_REGIMES[5],
+    ODE_REGIMES[6],
+)
+
+const STRESS_REGIMES = (
+    (name="small_t", pars=ConstantRateBDParameters(2.0, 0.5, 0.4, 0.7), ti=0.0, tj=1e-6),
+    (name="moderate_t", pars=ConstantRateBDParameters(2.0, 0.5, 0.4, 0.7), ti=0.0, tj=1.5),
+    (name="near_critical", pars=ConstantRateBDParameters(1.02, 0.8, 0.4, 0.5), ti=0.0, tj=2.0),
+    (name="low_sampling", pars=ConstantRateBDParameters(1.4, 0.8, 1e-8, 0.3), ti=0.0, tj=1.0),
+    (name="no_sampling", pars=ConstantRateBDParameters(1.4, 0.8, 0.0, 0.0), ti=0.0, tj=1.0),
+    (name="high_sampling_removal", pars=ConstantRateBDParameters(1.5, 0.2, 3.0, 0.95), ti=0.0, tj=1.2),
+    (name="zero_removal", pars=ConstantRateBDParameters(1.5, 0.6, 0.8, 0.0), ti=0.0, tj=1.4),
+    (name="larger_t_subcritical", pars=ConstantRateBDParameters(0.9, 1.1, 0.6, 0.8), ti=0.0, tj=4.0),
+)
+
+const FORWARD_W_VALUES = (0.0, 0.3, 0.75, 1.0)
+const BACKWARD_W_VALUES = (0.0, 0.25, 0.7, 1.0)
+const FORWARD_TJ_VALUES = (0.55, 1.1, 1.8)
+const BACKWARD_T_PAIRS = ((0.1, 0.45), (0.2, 1.2), (0.7, 2.0))
+const PGF_T_PAIRS = ((0.1, 0.6), (0.3, 1.4), (0.8, 2.2))
 
 @testset "BDUtils constant-rate core" begin
     λ = 2.0
@@ -120,7 +222,71 @@ end
         @test_throws ArgumentError ConstantRateBDParameters(λ, μ, ψ, r, Inf)
     end
 
-    @testset "PGF/probability helpers" begin
+    @testset "constant-rate native simulation and empirical extraction" begin
+        handcrafted = BDEventLog(
+            [0.2, 0.4, 0.6, 0.8],
+            [2, 2, 1, 3],
+            [1, 0, 0, 2],
+            [Birth, FossilizedSampling, SerialSampling, Death],
+            1,
+            1.0,
+        )
+
+        @test length(handcrafted) == 4
+        @test handcrafted[1] == BDEventRecord(0.2, 2, 1, Birth)
+        @test collect(record.kind for record in handcrafted) == [Birth, FossilizedSampling, SerialSampling, Death]
+        @test sprint(show, handcrafted) == "BDEventLog(4 events, initial_lineages=1, tmax=1.0)"
+
+        @test NS_at(handcrafted, 0.0) == (N=1, S=0)
+        @test NS_at(handcrafted, 0.2) == (N=2, S=0)
+        @test NS_at(handcrafted, 0.5) == (N=2, S=1)
+        @test NS_at(handcrafted, 0.7) == (N=1, S=2)
+        @test NS_at(handcrafted, 1.0) == (N=0, S=2)
+        @test N_at(handcrafted, 0.7) == 1
+        @test S_at(handcrafted, 0.7) == 2
+        @test N_over_time(handcrafted, [0.0, 0.5, 1.0]) == [1, 2, 0]
+        @test S_over_time(handcrafted, [0.0, 0.5, 1.0]) == [0, 1, 2]
+        @test NS_over_time(handcrafted, [0.0, 0.7]) == [(N=1, S=0), (N=1, S=2)]
+
+        extinct_unsampled = BDEventLog([0.1], [1], [0], [Death], 1, 1.0)
+        counts = joint_counts_NS([handcrafted, extinct_unsampled], 1.0)
+        @test counts == Dict((0, 2) => 1, (0, 0) => 1)
+        @test joint_pmf_NS(counts) == Dict((0, 2) => 0.5, (0, 0) => 0.5)
+        @test marginal_counts_NS(counts) == (N=Dict(0 => 2), S=Dict(2 => 1, 0 => 1))
+        @test marginal_pmf_NS(counts) == (N=Dict(0 => 1.0), S=Dict(2 => 0.5, 0 => 0.5))
+        @test joint_counts_NS([handcrafted, extinct_unsampled], [0.0, 1.0]) == [
+            Dict((1, 0) => 2),
+            Dict((0, 2) => 1, (0, 0) => 1),
+        ]
+
+        birth_only = simulate_bd(MersenneTwister(1), ConstantRateBDParameters(1.0, 0.0, 0.0, 0.0), 0.5)
+        @test birth_only isa BDEventLog
+        @test all(==(Birth), birth_only.kind)
+        @test issorted(birth_only.time)
+        @test N_at(birth_only, 0.5) == birth_only.initial_lineages + length(birth_only)
+        @test S_at(birth_only, 0.5) == 0
+
+        serial_only = simulate_bd(MersenneTwister(2), ConstantRateBDParameters(1.0, 0.0, 10.0, 1.0), 10.0; apply_ρ₀=false)
+        @test SerialSampling in serial_only.kind
+        @test all(kind -> kind == Birth || kind == SerialSampling, serial_only.kind)
+        @test N_at(serial_only, 10.0) >= 0
+        @test S_at(serial_only, 10.0) == count(==(SerialSampling), serial_only.kind)
+
+        contemp = simulate_bd(MersenneTwister(3), ConstantRateBDParameters(1.0, 0.0, 0.0, 0.0, 1.0), 0.0)
+        @test length(contemp) == 1
+        @test contemp.time == [0.0]
+        @test contemp.kind == [SerialSampling]
+        @test NS_at(contemp, 0.0) == (N=0, S=1)
+
+        @test_throws ArgumentError simulate_bd(ConstantRateBDParameters(1.0, 0.0, 0.0, 0.0), -0.1)
+        @test_throws ArgumentError simulate_bd(ConstantRateBDParameters(1.0, 0.0, 0.0, 0.0), 1.0; initial_lineages=-1)
+        @test_throws ArgumentError NS_at(handcrafted, -0.1)
+        @test_throws ArgumentError joint_pmf_NS(Dict{Tuple{Int,Int},Int}())
+    end
+
+    # Core analytical invariants: scalar closed forms, coefficients, PMFs,
+    # marginals, and tails. These are the first line of defense for refactors.
+    @testset "core invariant: PGF/probability helpers" begin
         a, b, Δ = bd_coefficients(1.0, λ, μ, ψ, r)
         a_struct, b_struct, Δ_struct = bd_coefficients(1.0, pars)
         @test isfinite(a)
@@ -156,6 +322,447 @@ end
         @test_throws ArgumentError bd_coefficients(1.0, λ, -μ, ψ, r)
         @test_throws ArgumentError bd_coefficients(1.0, λ, μ, ψ, 1.1)
         @test_throws ArgumentError bd_coefficients(Inf, λ, μ, ψ, r)
+    end
+
+    @testset "core invariant: joint NS series, marginals, and tails" begin
+        ti = 0.0
+        tj = 0.75
+        smax = 14
+        αs, βs, γs = constant_rate_pgf_series(smax, ti, tj, pars)
+
+        w = 0.2
+        powers = w .^ (0:smax)
+        @test sum(αs .* powers) ≈ alpha_bd(w, ti, tj, pars) atol=1e-11
+        @test sum(βs .* powers) ≈ beta_bd(w, ti, tj, pars) atol=1e-11
+        @test sum(γs .* powers) ≈ gamma_bd(w, ti, tj, pars) atol=1e-11
+
+        @test joint_pmf_NS(0, 2, ti, tj, pars) ≈ αs[3]
+        @test joint_pmf_NS(1, 2, ti, tj, pars) ≈ βs[3]
+
+        table = joint_pmf_NS_table(8, 6, ti, tj, pars)
+        @test size(table) == (9, 7)
+        @test table[1, 3] ≈ joint_pmf_NS(0, 2, ti, tj, pars)
+        @test table[2, 3] ≈ joint_pmf_NS(1, 2, ti, tj, pars)
+        @test table[5, 4] ≈ joint_pmf_NS(4, 3, ti, tj, pars)
+        @test all(x -> x >= -1e-14, table)
+
+        @test n_marginal_pmf(0, ti, tj, pars) ≈ alpha_bd(1.0, ti, tj, pars)
+        @test n_marginal_pmf(4, ti, tj, pars) ≈ pn_birthdeath(4, ti, tj, pars)
+
+        ncut = n_truncation(ti, tj, pars; atol=1e-10)
+        @test n_marginal_tail(ncut, ti, tj, pars) <= 1e-10
+        @test sum(n_marginal_pmf(n, ti, tj, pars) for n in 0:ncut) + n_marginal_tail(ncut, ti, tj, pars) ≈ 1.0
+
+        @test s_marginal_pmf(0, ti, tj, pars) ≈ alpha_bd(0.0, ti, tj, pars) + beta_bd(0.0, ti, tj, pars) / (1 - gamma_bd(0.0, ti, tj, pars))
+        @test s_marginal_pmf(3, ti, tj, pars) ≈ sum(joint_pmf_NS(n, 3, ti, tj, pars) for n in 0:120) atol=1e-12
+
+        @test s_marginal_tail(0, ti, tj, pars) ≈ 1 - s_marginal_pmf(0, ti, tj, pars)
+        @test s_marginal_tail(5, ti, tj, pars) ≈ 1 - sum(s_marginal_pmf(s, ti, tj, pars) for s in 0:5) atol=1e-12
+        @test s_marginal_tail(6, ti, tj, pars) <= s_marginal_tail(5, ti, tj, pars)
+
+        scut = s_truncation(ti, tj, pars; atol=1e-9)
+        @test s_marginal_tail(scut, ti, tj, pars) <= 1e-9
+        if scut > 0
+            @test s_marginal_tail(scut - 1, ti, tj, pars) > 1e-9
+        end
+
+        no_sampling = ConstantRateBDParameters(λ, μ, 0.0, r)
+        @test s_marginal_pmf(0, ti, tj, no_sampling) ≈ 1.0
+        @test s_marginal_tail(0, ti, tj, no_sampling) == 0.0
+        @test s_truncation(ti, tj, no_sampling; atol=0.0) == 0
+
+        diagnostic = joint_pmf_NS_table(8, 6, ti, tj, pars; diagnostics=true)
+        @test diagnostic.table == table
+        @test diagnostic.nmax == 8
+        @test diagnostic.smax == 6
+        @test diagnostic.retained_mass ≈ sum(table)
+        @test diagnostic.n_tail_mass ≈ n_marginal_tail(8, ti, tj, pars)
+        @test diagnostic.s_tail_mass ≈ s_marginal_tail(6, ti, tj, pars)
+        @test diagnostic.missing_mass ≈ 1 - diagnostic.retained_mass
+        @test diagnostic.n_only_tail_mass + diagnostic.s_only_tail_mass + diagnostic.joint_tail_overlap_mass + diagnostic.retained_mass ≈ 1.0 atol=1e-12
+        @test diagnostic.n_only_tail_mass + diagnostic.joint_tail_overlap_mass ≈ diagnostic.n_tail_mass atol=1e-12
+        @test diagnostic.s_only_tail_mass + diagnostic.joint_tail_overlap_mass ≈ diagnostic.s_tail_mass atol=1e-12
+
+        @test_throws ArgumentError constant_rate_pgf_series(-1, ti, tj, pars)
+        @test_throws ArgumentError constant_rate_pgf_series(2, tj, ti, pars)
+        @test_throws ArgumentError joint_pmf_NS(-1, 0, ti, tj, pars)
+        @test_throws ArgumentError joint_pmf_NS(0, -1, ti, tj, pars)
+        @test_throws ArgumentError s_marginal_tail(-1, ti, tj, pars)
+        @test_throws ArgumentError s_truncation(ti, tj, pars; atol=-1.0)
+        @test_throws ArgumentError s_truncation(ti, tj, pars; atol=NaN)
+        @test_throws ArgumentError s_truncation(ti, tj, pars; atol=1e-14, max_smax=0)
+        @test_throws ArgumentError n_truncation(ti, tj, pars; atol=-1.0)
+    end
+
+    # Extended analytical stress checks: same invariants under numerically
+    # awkward but valid parameter/time regimes.
+    @testset "stress: constant-rate NS numerical regimes" begin
+        for regime in STRESS_REGIMES
+            name, stress_pars, ti, tj = regime.name, regime.pars, regime.ti, regime.tj
+            nmax = n_truncation(ti, tj, stress_pars; atol=1e-8)
+            smax = s_truncation(ti, tj, stress_pars; atol=1e-8, max_smax=2_000)
+            diagnostic = joint_pmf_NS_table(nmax, smax, ti, tj, stress_pars; diagnostics=true)
+            table = diagnostic.table
+
+            @test all(isfinite, table)
+            @test minimum(table) >= -1e-10
+            @test 0.0 <= diagnostic.retained_mass <= 1.0 + 1e-9
+            @test diagnostic.n_tail_mass <= 1e-8 || name == "small_t"
+            @test diagnostic.s_tail_mass <= 1e-8 || stress_pars.ψ == 0.0
+            @test diagnostic.missing_mass ≈ 1 - diagnostic.retained_mass atol=1e-11
+            @test diagnostic.n_only_tail_mass + diagnostic.s_only_tail_mass + diagnostic.joint_tail_overlap_mass + diagnostic.retained_mass ≈ 1.0 atol=2e-8
+
+            for n in 0:min(nmax, 6), s in 0:min(smax, 5)
+                @test table[n + 1, s + 1] ≈ joint_pmf_NS(n, s, ti, tj, stress_pars) atol=1e-12 rtol=1e-9
+            end
+
+            retained_n = vec(sum(table; dims=2))
+            for n in 0:min(nmax, 8)
+                @test retained_n[n + 1] <= n_marginal_pmf(n, ti, tj, stress_pars) + max(1e-10, diagnostic.s_tail_mass + 1e-10)
+            end
+
+            z = 0.45
+            w = 0.35
+            approx_pgf = table_pgf_sum(table, z, w)
+            scalar_pgf = scalar_joint_pgf(z, w, ti, tj, stress_pars)
+            @test isfinite(scalar_pgf)
+            @test abs(approx_pgf - scalar_pgf) <= diagnostic.n_tail_mass + diagnostic.s_tail_mass + 5e-8
+        end
+    end
+
+    @testset "core invariant: NS derivative identities" begin
+        ti = 0.0
+        tj = 1.1
+        derivative_pars = ConstantRateBDParameters(1.7, 0.6, 0.5, 0.65)
+        αs, βs, γs = constant_rate_pgf_series(4, ti, tj, derivative_pars)
+
+        for (f, coeffs) in ((w -> alpha_bd(w, ti, tj, derivative_pars), αs),
+                            (w -> beta_bd(w, ti, tj, derivative_pars), βs),
+                            (w -> gamma_bd(w, ti, tj, derivative_pars), γs))
+            @test central_first_derivative(f, 0.0; h=1e-5) ≈ coeffs[2] rtol=2e-5 atol=2e-7
+            @test central_second_derivative(f, 0.0; h=2e-4) / 2 ≈ coeffs[3] rtol=2e-4 atol=2e-6
+        end
+
+        z = 0.4
+        g_coeffs = vec(sum(joint_pmf_NS_table(12, 4, ti, tj, derivative_pars) .* (z .^ (0:12)), dims=1))
+        gz = w -> scalar_joint_pgf(z, w, ti, tj, derivative_pars)
+        @test central_first_derivative(gz, 0.0; h=1e-5) ≈ g_coeffs[2] rtol=2e-5 atol=2e-7
+        @test central_second_derivative(gz, 0.0; h=2e-4) / 2 ≈ g_coeffs[3] rtol=2e-4 atol=2e-6
+
+        γ1 = gamma_bd(1.0, ti, tj, derivative_pars)
+        β1 = beta_bd(1.0, ti, tj, derivative_pars)
+        expected_n = β1 / (1 - γ1)^2
+        expected_n2factorial = 2β1 * γ1 / (1 - γ1)^3
+        ncut = n_truncation(ti, tj, derivative_pars; atol=1e-12)
+        @test sum(n * n_marginal_pmf(n, ti, tj, derivative_pars) for n in 0:ncut) + β1 * (γ1^ncut) * (ncut + 1 - ncut * γ1) / (1 - γ1)^2 ≈ expected_n rtol=1e-11
+        @test central_first_derivative(zval -> scalar_joint_pgf(zval, 1.0, ti, tj, derivative_pars), 1.0; h=1e-5) ≈ expected_n rtol=1e-8
+        @test central_second_derivative(zval -> scalar_joint_pgf(zval, 1.0, ti, tj, derivative_pars), 1.0; h=2e-4) ≈ expected_n2factorial rtol=2e-5
+
+        scut = s_truncation(ti, tj, derivative_pars; atol=1e-12, max_smax=2_000)
+        expected_s = sum(s * s_marginal_pmf(s, ti, tj, derivative_pars) for s in 0:scut)
+        expected_s2factorial = sum(s * (s - 1) * s_marginal_pmf(s, ti, tj, derivative_pars) for s in 0:scut)
+        s_tail = s_marginal_tail(scut, ti, tj, derivative_pars)
+        gw = w -> scalar_joint_pgf(1.0, w, ti, tj, derivative_pars)
+        @test central_first_derivative(gw, 1.0; h=1e-5) ≈ expected_s rtol=5e-6 atol=max(1e-9, 10s_tail)
+        @test central_second_derivative(gw, 1.0; h=2e-4) ≈ expected_s2factorial rtol=2e-4 atol=max(1e-8, 100s_tail)
+
+        table = joint_pmf_NS_table(n_truncation(ti, tj, derivative_pars; atol=1e-11),
+                                   s_truncation(ti, tj, derivative_pars; atol=1e-11, max_smax=2_000),
+                                   ti, tj, derivative_pars)
+        z_inside = 0.55
+        w_inside = 0.45
+        @test table_pgf_sum(table, z_inside, w_inside) ≈ scalar_joint_pgf(z_inside, w_inside, ti, tj, derivative_pars) atol=3e-10
+    end
+
+    # Core ODE invariants: the closed forms must satisfy their defining
+    # forward and backward triangular systems, plus scalar PGF equations.
+    @testset "core invariant: forward triangular ODE residuals" begin
+        ti = 0.2
+
+        for ode_pars in ODE_REGIMES
+            for w in FORWARD_W_VALUES
+                @test alpha_bd(w, ti, ti, ode_pars) ≈ 0.0 atol=1e-14
+                @test beta_bd(w, ti, ti, ode_pars) ≈ 1.0 atol=1e-14
+                @test gamma_bd(w, ti, ti, ode_pars) ≈ 0.0 atol=1e-14
+
+                a, b, _ = bd_coefficients(w, ode_pars)
+                for tj in FORWARD_TJ_VALUES
+                    γij = gamma_bd(w, ti, tj, ode_pars)
+                    βij = beta_bd(w, ti, tj, ode_pars)
+                    dγ = central_first_derivative(x -> gamma_bd(w, ti, x, ode_pars), tj; h=2e-5)
+                    dβ = central_first_derivative(x -> beta_bd(w, ti, x, ode_pars), tj; h=2e-5)
+                    dα = central_first_derivative(x -> alpha_bd(w, ti, x, ode_pars), tj; h=2e-5)
+
+                    rhs_γ = (1 - γij) * (ode_pars.λ - a * γij) - ode_pars.ψ * (1 - w) * γij
+                    rhs_β = (2a * γij + b) * βij
+                    rhs_α = a * βij
+
+                    @test dγ ≈ rhs_γ rtol=2e-7 atol=2e-8
+                    @test dβ ≈ rhs_β rtol=2e-6 atol=2e-8
+                    @test dα ≈ rhs_α rtol=2e-6 atol=2e-8
+                end
+            end
+        end
+    end
+
+    @testset "core invariant: backward triangular ODE residuals" begin
+        for backward_pars in ODE_REGIMES
+            for w in BACKWARD_W_VALUES
+                for t in (0.0, 0.8, 1.6)
+                    @test alpha_bd(w, t, t, backward_pars) ≈ 0.0 atol=1e-14
+                    @test beta_bd(w, t, t, backward_pars) ≈ 1.0 atol=1e-14
+                    @test gamma_bd(w, t, t, backward_pars) ≈ 0.0 atol=1e-14
+                end
+
+                a = bd_a(w, backward_pars)
+                b = bd_b_backward(w, backward_pars)
+                for (ti, tj) in BACKWARD_T_PAIRS
+                    αij = alpha_bd(w, ti, tj, backward_pars)
+                    βij = beta_bd(w, ti, tj, backward_pars)
+                    γij = gamma_bd(w, ti, tj, backward_pars)
+                    dα = central_first_derivative(x -> alpha_bd(w, x, tj, backward_pars), ti; h=2e-5)
+                    dβ = central_first_derivative(x -> beta_bd(w, x, tj, backward_pars), ti; h=2e-5)
+                    dγ = central_first_derivative(x -> gamma_bd(w, x, tj, backward_pars), ti; h=2e-5)
+
+                    rhs_α_quadratic = backward_pars.λ * αij^2 + b * αij + a
+                    rhs_α_branching = (1 - αij) * (a - backward_pars.λ * αij) - backward_pars.ψ * (1 - w) * αij
+                    rhs_β = (2backward_pars.λ * αij + b) * βij
+                    rhs_γ = backward_pars.λ * βij
+
+                    @test rhs_α_quadratic ≈ rhs_α_branching rtol=2e-13 atol=2e-14
+                    @test -dα ≈ rhs_α_quadratic rtol=2e-6 atol=2e-8
+                    @test -dβ ≈ rhs_β rtol=2e-6 atol=2e-8
+                    @test -dγ ≈ rhs_γ rtol=2e-7 atol=2e-8
+                end
+            end
+        end
+    end
+
+    @testset "core invariant: backward Kolmogorov PGF residuals" begin
+        z_values = (0.0, 0.35, 0.8)
+        w_values = (0.0, 0.4, 1.0)
+
+        for backward_pars in ODE_REGIMES
+            for z in z_values, w in w_values, (ti, tj) in PGF_T_PAIRS
+                F = scalar_joint_pgf(z, w, ti, tj, backward_pars)
+                dF = central_first_derivative(x -> scalar_joint_pgf(z, w, x, tj, backward_pars), ti; h=2e-5)
+                rhs = backward_generator(F, w, backward_pars)
+                @test -dF ≈ rhs rtol=4e-6 atol=3e-8
+            end
+        end
+    end
+
+    @testset "core invariant: backward Kendall specialization" begin
+        for backward_pars in KENDALL_REGIMES
+            δ = backward_pars.μ + backward_pars.r * backward_pars.ψ
+            for (ti, tj) in BACKWARD_T_PAIRS
+                ξ = alpha_bd(1.0, ti, tj, backward_pars)
+                η = gamma_bd(1.0, ti, tj, backward_pars)
+                β1 = beta_bd(1.0, ti, tj, backward_pars)
+                dξ = central_first_derivative(x -> alpha_bd(1.0, x, tj, backward_pars), ti; h=2e-5)
+                dη = central_first_derivative(x -> gamma_bd(1.0, x, tj, backward_pars), ti; h=2e-5)
+                dβ = central_first_derivative(x -> beta_bd(1.0, x, tj, backward_pars), ti; h=2e-5)
+
+                @test β1 ≈ (1 - ξ) * (1 - η) rtol=2e-12 atol=2e-14
+                @test -dξ ≈ backward_pars.λ * ξ^2 - (backward_pars.λ + δ) * ξ + δ rtol=2e-6 atol=2e-8
+                @test -dη ≈ backward_pars.λ * β1 rtol=2e-7 atol=2e-8
+                @test -dβ ≈ (2backward_pars.λ * ξ - (backward_pars.λ + δ)) * β1 rtol=2e-6 atol=2e-8
+            end
+        end
+    end
+
+    @testset "core invariant: forward Kendall identities at w = 1" begin
+        ti = 0.0
+
+        for kendall_pars in KENDALL_REGIMES
+            @test alpha_bd(1.0, ti, ti, kendall_pars) ≈ 0.0 atol=1e-14
+            @test gamma_bd(1.0, ti, ti, kendall_pars) ≈ 0.0 atol=1e-14
+            @test beta_bd(1.0, ti, ti, kendall_pars) ≈ 1.0 atol=1e-14
+
+            δ = kendall_pars.μ + kendall_pars.r * kendall_pars.ψ
+            for tj in (0.35, 1.0, 1.7)
+                ξ = alpha_bd(1.0, ti, tj, kendall_pars)
+                η = gamma_bd(1.0, ti, tj, kendall_pars)
+                β1 = beta_bd(1.0, ti, tj, kendall_pars)
+                @test β1 ≈ (1 - ξ) * (1 - η) rtol=2e-12 atol=2e-14
+
+                dη = central_first_derivative(x -> gamma_bd(1.0, ti, x, kendall_pars), tj; h=2e-5)
+                dξ = central_first_derivative(x -> alpha_bd(1.0, ti, x, kendall_pars), tj; h=2e-5)
+                @test dη ≈ (kendall_pars.λ - δ * η) * (1 - η) rtol=2e-7 atol=2e-8
+                @test dξ ≈ δ * (1 - ξ) * (1 - η) rtol=2e-6 atol=2e-8
+            end
+        end
+    end
+
+    @testset "core invariant: Riccati residual for p" begin
+        for riccati_pars in ODE_REGIMES
+            tk = 2.5
+            @test p_unsampled(tk, tk, riccati_pars) ≈ 1.0 atol=1e-14
+            for tj in (0.2, 1.0, 1.9)
+                p = p_unsampled(tj, tk, riccati_pars)
+                dp = central_first_derivative(x -> p_unsampled(x, tk, riccati_pars), tj; h=2e-5)
+                rhs = riccati_pars.μ - (riccati_pars.λ + riccati_pars.μ + riccati_pars.ψ) * p + riccati_pars.λ * p^2
+                @test -dp ≈ rhs rtol=2e-6 atol=2e-8
+            end
+        end
+    end
+
+    @testset "public API: reconstructed scalar helpers" begin
+        ti = 0.0
+        tk = 2.4
+
+        for reconstructed_pars in KENDALL_REGIMES
+            for w in (0.0, 0.4, 1.0), tj in (0.35, 1.0, 1.7)
+                p = unsampled_probability(tj, tk, reconstructed_pars)
+                expected = transformed_alpha_beta_gamma(w, ti, tj, tk, reconstructed_pars)
+
+                @test p ≈ p_unsampled(tj, tk, reconstructed_pars)
+                @test transformed_birth_rate(tj, tk, reconstructed_pars) ≈ reconstructed_pars.λ * (1 - p)
+                @test transformed_death_rate(tj, tk, reconstructed_pars) ≈ reconstructed_pars.ψ * (reconstructed_pars.r + (1 - reconstructed_pars.r) * p) / (1 - p)
+                @test transformed_sampling_rate(tj, tk, reconstructed_pars) ≈ reconstructed_pars.ψ / (1 - p)
+
+                @test reconstructed_alpha_bd(w, ti, tj, tk, reconstructed_pars) ≈ expected.α
+                @test reconstructed_beta_bd(w, ti, tj, tk, reconstructed_pars) ≈ expected.β
+                @test reconstructed_gamma_bd(w, ti, tj, tk, reconstructed_pars) ≈ expected.γ
+
+                z = 0.55
+                @test reconstructed_pgf(z, w, ti, tj, tk, reconstructed_pars) ≈ expected.α + expected.β * z / (1 - expected.γ * z)
+            end
+
+            for tj in (0.35, 1.0, 1.7)
+                ξ = reconstructed_xi(ti, tj, tk, reconstructed_pars)
+                η = reconstructed_eta(ti, tj, tk, reconstructed_pars)
+                β1 = reconstructed_beta_bd(1.0, ti, tj, tk, reconstructed_pars)
+                @test β1 ≈ (1 - ξ) * (1 - η) rtol=2e-11 atol=2e-13
+                @test reconstructed_count_pmf(0, ti, tj, tk, reconstructed_pars) ≈ ξ
+                @test reconstructed_count_pmf(1, ti, tj, tk, reconstructed_pars) ≈ (1 - ξ) * (1 - η)
+                @test reconstructed_count_pmf(4, ti, tj, tk, reconstructed_pars) ≈ (1 - ξ) * (1 - η) * η^3
+                @test sum(reconstructed_count_pmf(a, ti, tj, tk, reconstructed_pars) for a in 0:200) ≈ 1.0 atol=1e-12
+            end
+        end
+
+        @test unsampled_probability(1.0, 1.0, pars) ≈ 1.0
+        @test_throws ArgumentError unsampled_probability(2.0, 1.0, pars)
+        @test_throws ArgumentError reconstructed_alpha_bd(1.0, 1.1, 1.0, 2.0, pars)
+        @test_throws ArgumentError reconstructed_count_pmf(-1, 0.0, 1.0, 2.0, pars)
+        @test_throws ArgumentError transformed_birth_rate(0.0, 1.0, ConstantRateBDParameters(1.0, 0.5, 0.0, 0.0))
+    end
+
+    @testset "public API: reconstructed series, PMF, marginals, and truncation" begin
+        ti = 0.0
+        tj = 0.85
+        tk = 2.4
+        reconstructed_pars = ConstantRateBDParameters(1.8, 0.5, 0.7, 0.4)
+        smax = 10
+        αs, βs, γs = reconstructed_pgf_series(smax, ti, tj, tk, reconstructed_pars)
+
+        w = 0.25
+        powers = w .^ (0:smax)
+        @test sum(αs .* powers) ≈ reconstructed_alpha_bd(w, ti, tj, tk, reconstructed_pars) atol=1e-11
+        @test sum(βs .* powers) ≈ reconstructed_beta_bd(w, ti, tj, tk, reconstructed_pars) atol=1e-11
+        @test sum(γs .* powers) ≈ reconstructed_gamma_bd(w, ti, tj, tk, reconstructed_pars) atol=1e-11
+
+        table = reconstructed_joint_pmf_table(9, 7, ti, tj, tk, reconstructed_pars)
+        @test size(table) == (10, 8)
+        @test table[1, 3] ≈ reconstructed_joint_pmf(0, 2, ti, tj, tk, reconstructed_pars)
+        @test table[2, 3] ≈ reconstructed_joint_pmf(1, 2, ti, tj, tk, reconstructed_pars)
+        @test table[5, 4] ≈ reconstructed_joint_pmf(4, 3, ti, tj, tk, reconstructed_pars)
+        @test all(x -> x >= -1e-13, table)
+
+        z = 0.45
+        w_inside = 0.35
+        count_cut = reconstructed_count_truncation(ti, tj, tk, reconstructed_pars; atol=1e-11)
+        sampling_cut = reconstructed_sampling_truncation(ti, tj, tk, reconstructed_pars; atol=1e-11, max_smax=2_000)
+        pgf_table = reconstructed_joint_pmf_table(count_cut, sampling_cut, ti, tj, tk, reconstructed_pars)
+        @test table_pgf_sum(pgf_table, z, w_inside) ≈ reconstructed_pgf(z, w_inside, ti, tj, tk, reconstructed_pars) atol=3e-10
+
+        @test reconstructed_count_pmf(0, ti, tj, tk, reconstructed_pars) ≈ reconstructed_xi(ti, tj, tk, reconstructed_pars)
+        @test reconstructed_count_pmf(4, ti, tj, tk, reconstructed_pars) ≈ sum(reconstructed_joint_pmf(4, s, ti, tj, tk, reconstructed_pars) for s in 0:120) atol=1e-12
+        @test reconstructed_sampling_marginal_pmf(3, ti, tj, tk, reconstructed_pars) ≈ sum(reconstructed_joint_pmf(a, 3, ti, tj, tk, reconstructed_pars) for a in 0:120) atol=1e-12
+
+        @test reconstructed_count_tail(count_cut, ti, tj, tk, reconstructed_pars) <= 1e-11
+        if count_cut > 0
+            @test reconstructed_count_tail(count_cut - 1, ti, tj, tk, reconstructed_pars) > 1e-11
+        end
+        @test sum(reconstructed_count_pmf(a, ti, tj, tk, reconstructed_pars) for a in 0:count_cut) + reconstructed_count_tail(count_cut, ti, tj, tk, reconstructed_pars) ≈ 1.0
+
+        @test reconstructed_sampling_tail(5, ti, tj, tk, reconstructed_pars) ≈ 1 - sum(reconstructed_sampling_marginal_pmf(s, ti, tj, tk, reconstructed_pars) for s in 0:5) atol=1e-12
+        @test reconstructed_sampling_tail(sampling_cut, ti, tj, tk, reconstructed_pars) <= 1e-11
+        if sampling_cut > 0
+            @test reconstructed_sampling_tail(sampling_cut - 1, ti, tj, tk, reconstructed_pars) > 1e-11
+        end
+
+        diagnostic = reconstructed_joint_pmf_table(9, 7, ti, tj, tk, reconstructed_pars; diagnostics=true)
+        @test diagnostic.table == table
+        @test diagnostic.amax == 9
+        @test diagnostic.smax == 7
+        @test diagnostic.retained_mass ≈ sum(table)
+        @test diagnostic.count_tail_mass ≈ reconstructed_count_tail(9, ti, tj, tk, reconstructed_pars)
+        @test diagnostic.sampling_tail_mass ≈ reconstructed_sampling_tail(7, ti, tj, tk, reconstructed_pars)
+        @test diagnostic.missing_mass ≈ 1 - diagnostic.retained_mass
+        @test diagnostic.count_only_tail_mass + diagnostic.sampling_only_tail_mass + diagnostic.joint_tail_overlap_mass + diagnostic.retained_mass ≈ 1.0 atol=1e-11
+        @test diagnostic.count_only_tail_mass + diagnostic.joint_tail_overlap_mass ≈ diagnostic.count_tail_mass atol=1e-11
+        @test diagnostic.sampling_only_tail_mass + diagnostic.joint_tail_overlap_mass ≈ diagnostic.sampling_tail_mass atol=1e-11
+
+        @test_throws ArgumentError reconstructed_pgf_series(-1, ti, tj, tk, reconstructed_pars)
+        @test_throws ArgumentError reconstructed_pgf_series(2, tj, ti, tk, reconstructed_pars)
+        @test_throws ArgumentError reconstructed_joint_pmf(-1, 0, ti, tj, tk, reconstructed_pars)
+        @test_throws ArgumentError reconstructed_joint_pmf(0, -1, ti, tj, tk, reconstructed_pars)
+        @test_throws ArgumentError reconstructed_count_truncation(ti, tj, tk, reconstructed_pars; atol=-1.0)
+        @test_throws ArgumentError reconstructed_sampling_truncation(ti, tj, tk, reconstructed_pars; atol=-1.0)
+        @test_throws ArgumentError reconstructed_sampling_truncation(ti, tj, tk, reconstructed_pars; atol=1e-14, max_smax=0)
+        degenerate_series = reconstructed_pgf_series(2, 0.0, 0.5, 1.0, ConstantRateBDParameters(1.0, 0.5, 0.0, 0.0))
+        @test all(v -> all(isfinite, v), degenerate_series)
+    end
+
+    # Extended reconstructed/conditioned residuals now exercise the public API.
+    @testset "extended invariant: transformed-system residuals" begin
+        ti = 0.0
+        tk = 2.4
+
+        for transformed_pars in KENDALL_REGIMES
+            for w in (0.0, 0.4, 1.0), tj in (0.35, 1.0, 1.7)
+                α = reconstructed_alpha_bd(w, ti, tj, tk, transformed_pars)
+                β = reconstructed_beta_bd(w, ti, tj, tk, transformed_pars)
+                γ = reconstructed_gamma_bd(w, ti, tj, tk, transformed_pars)
+                λ̃ = transformed_birth_rate(tj, tk, transformed_pars)
+                μ̃ = transformed_death_rate(tj, tk, transformed_pars)
+                ψ̃ = transformed_sampling_rate(tj, tk, transformed_pars)
+                dγ = central_first_derivative(x -> reconstructed_gamma_bd(w, ti, x, tk, transformed_pars), tj; h=2e-5)
+                dβ = central_first_derivative(x -> reconstructed_beta_bd(w, ti, x, tk, transformed_pars), tj; h=2e-5)
+                dα = central_first_derivative(x -> reconstructed_alpha_bd(w, ti, x, tk, transformed_pars), tj; h=2e-5)
+
+                rate_sum = λ̃ + μ̃ * w + ψ̃ * (1 - w)
+                rhs_γ = λ̃ - rate_sum * γ + μ̃ * w * γ^2
+                rhs_β = (2μ̃ * w * γ - rate_sum) * β
+                rhs_α = μ̃ * w * β
+
+                @test dγ ≈ rhs_γ rtol=5e-6 atol=2e-7
+                @test dβ ≈ rhs_β rtol=8e-6 atol=2e-7
+                @test dα ≈ rhs_α rtol=8e-6 atol=2e-7
+            end
+        end
+    end
+
+    @testset "extended invariant: transformed Kendall identities" begin
+        ti = 0.0
+        tk = 2.4
+
+        for transformed_pars in KENDALL_REGIMES
+            for tj in (0.35, 1.0, 1.7)
+                ξ = reconstructed_xi(ti, tj, tk, transformed_pars)
+                η = reconstructed_eta(ti, tj, tk, transformed_pars)
+                β1 = reconstructed_beta_bd(1.0, ti, tj, tk, transformed_pars)
+                λ̃ = transformed_birth_rate(tj, tk, transformed_pars)
+                μ̃ = transformed_death_rate(tj, tk, transformed_pars)
+                @test β1 ≈ (1 - ξ) * (1 - η) rtol=2e-11 atol=2e-13
+
+                dη = central_first_derivative(x -> reconstructed_eta(ti, x, tk, transformed_pars), tj; h=2e-5)
+                dξ = central_first_derivative(x -> reconstructed_xi(ti, x, tk, transformed_pars), tj; h=2e-5)
+                @test dη ≈ (λ̃ - μ̃ * η) * (1 - η) rtol=5e-6 atol=2e-7
+                @test dξ ≈ μ̃ * (1 - ξ) * (1 - η) rtol=8e-6 atol=2e-7
+            end
+        end
     end
 
     @testset "extinction and survival helpers" begin

@@ -2,19 +2,66 @@ module BDUtils
 
 using TreeSim
 using LinearAlgebra
+using Random
 
 include("parameters.jl")
+include("simulation.jl")
 include("pgf.jl")
 include("likelihood_constant.jl")
 include("fit_constant.jl")
 include("derived.jl")
 
 export ConstantRateBDParameters,
+       BDEventKind,
+       Birth,
+       Death,
+       FossilizedSampling,
+       SerialSampling,
+       BDEventLog,
+       BDEventRecord,
+       simulate_bd,
+       NS_at,
+       N_at,
+       S_at,
+       NS_over_time,
+       N_over_time,
+       S_over_time,
+       joint_counts_NS,
+       joint_pmf_NS,
+       marginal_counts_NS,
+       marginal_pmf_NS,
        bd_coefficients,
        gamma_bd,
        alpha_bd,
        beta_bd,
        pn_birthdeath,
+       constant_rate_pgf_series,
+       joint_pmf_NS_table,
+       n_marginal_pmf,
+       s_marginal_pmf,
+       s_marginal_tail,
+       s_truncation,
+       n_marginal_tail,
+       n_truncation,
+       unsampled_probability,
+       transformed_birth_rate,
+       transformed_death_rate,
+       transformed_sampling_rate,
+       reconstructed_alpha_bd,
+       reconstructed_beta_bd,
+       reconstructed_gamma_bd,
+       reconstructed_pgf,
+       reconstructed_xi,
+       reconstructed_eta,
+       reconstructed_count_pmf,
+       reconstructed_pgf_series,
+       reconstructed_joint_pmf,
+       reconstructed_joint_pmf_table,
+       reconstructed_sampling_marginal_pmf,
+       reconstructed_count_tail,
+       reconstructed_count_truncation,
+       reconstructed_sampling_tail,
+       reconstructed_sampling_truncation,
        γ,
        α,
        β,

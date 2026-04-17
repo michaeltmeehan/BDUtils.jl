@@ -2,14 +2,14 @@
 
 julia_version = "1.12.6"
 manifest_format = "2.0"
-project_hash = "a3dd7343a278d858dadc3676aabff338eda60fa0"
+project_hash = "3be5f053f1ffcbed665c8406f7f52ddc67f4a213"
 
 [[deps.Artifacts]]
 uuid = "56f22d72-fd6d-98f1-02f0-08ddc0907c33"
 version = "1.11.0"
 
 [[deps.BDUtils]]
-deps = ["LinearAlgebra", "TreeSim"]
+deps = ["LinearAlgebra", "Random", "TreeSim"]
 path = "."
 uuid = "bc7f5a9a-21e1-4f64-8ef2-66cc3e2ef6a0"
 version = "0.1.0"
@@ -32,6 +32,15 @@ version = "1.12.0"
 deps = ["Artifacts", "CompilerSupportLibraries_jll", "Libdl"]
 uuid = "4536629a-c528-5b80-bd46-f80d51c5b363"
 version = "0.3.29+0"
+
+[[deps.Random]]
+deps = ["SHA"]
+uuid = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
+version = "1.11.0"
+
+[[deps.SHA]]
+uuid = "ea8e919c-243c-51af-8825-aaa63cd721ce"
+version = "0.7.0"
 
 [[deps.TreeSim]]
 path = "../TreeSim.jl"
