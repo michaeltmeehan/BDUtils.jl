@@ -590,6 +590,246 @@ const PGF_T_PAIRS = ((0.1, 0.6), (0.3, 1.4), (0.8, 2.2))
         @test_throws ArgumentError multitype_mean_N(MultitypeBDEventLog[], 0.0)
     end
 
+    @testset "multitype analytical backbone" begin
+        analytical_mt = MultitypeBDParameters(
+            [0.6 0.2; 0.1 0.4],
+            [0.3, 0.5],
+            [0.2, 0.1],
+            [0.0, 0.8],
+            [0.0 0.15; 0.05 0.0],
+            [0.1, 0.25],
+        )
+
+        E0 = multitype_E(0.0, analytical_mt)
+        @test E0 ≈ [0.9, 0.75]
+        @test all(0 .<= multitype_E(1.0, analytical_mt) .<= 1)
+        @test all(0 .<= multitype_E(2.0, analytical_mt) .<= 1)
+        @test multitype_E_over_time([0.0, 0.5, 1.0], analytical_mt) == [
+            multitype_E(0.0, analytical_mt),
+            multitype_E(0.5, analytical_mt),
+            multitype_E(1.0, analytical_mt),
+        ]
+
+        k1_analytical = MultitypeBDParameters([1.4;;], [0.6], [0.3], [0.7], [0.0;;], [0.2])
+        @test only(multitype_E(0.0, k1_analytical)) ≈ E_constant(0.0, ConstantRateBDParameters(1.4, 0.6, 0.3, 0.0, 0.2))
+        @test only(multitype_E(1.2, k1_analytical; steps_per_unit=1024)) ≈
+              E_constant(1.2, ConstantRateBDParameters(1.4, 0.6, 0.3, 0.0, 0.2)) atol=2e-6
+
+        no_observation = MultitypeBDParameters(
+            [0.5 0.1; 0.2 0.4],
+            [0.3, 0.7],
+            zeros(2),
+            zeros(2),
+            [0.0 0.2; 0.1 0.0],
+            zeros(2),
+        )
+        @test multitype_E(3.0, no_observation) ≈ [1.0, 1.0]
+
+        no_birth = MultitypeBDParameters(zeros(2, 2), [0.4, 0.2], [0.6, 0.8], [0.0, 1.0], zeros(2, 2), [0.0, 0.0])
+        E_no_birth = multitype_E(1.5, no_birth)
+        @test all(multitype_E(2.0, no_birth) .<= multitype_E(1.0, no_birth) .+ 1e-8)
+        @test E_no_birth[1] ≈ 0.4 / 1.0 + (1 - 0.4 / 1.0) * exp(-1.0 * 1.5) atol=1e-8
+        @test E_no_birth[2] ≈ 0.2 / 1.0 + (1 - 0.2 / 1.0) * exp(-1.0 * 1.5) atol=1e-8
+
+        death_only_with_present_sampling = MultitypeBDParameters(zeros(1, 1), [0.7], [0.0], [0.0], zeros(1, 1), [0.3])
+        @test only(multitype_E(2.0, death_only_with_present_sampling)) ≈ 1 - 0.3 * exp(-0.7 * 2.0) atol=1e-8
+
+        flow_no_birth = multitype_log_flow(1.25, no_birth)
+        @test flow_no_birth ≈ [-1.0 * 1.25, -1.0 * 1.25] atol=1e-8
+        @test multitype_flow(1.25, no_birth) ≈ exp.(flow_no_birth)
+        @test multitype_log_flow(0.0, analytical_mt) == [0.0, 0.0]
+
+        rng = MersenneTwister(20260417)
+        sim_pars = MultitypeBDParameters(zeros(1, 1), [0.4], [0.6], [1.0], zeros(1, 1), [0.0])
+        nsims = 2_000
+        no_sample_count = 0
+        for _ in 1:nsims
+            log = simulate_multitype_bd(rng, sim_pars, 1.0; apply_ρ₀=true)
+            no_sample_count += multitype_S_at(log, 1.0)[1] == 0
+        end
+        @test no_sample_count / nsims ≈ only(multitype_E(1.0, sim_pars)) atol=0.04
+
+        @test_throws ArgumentError multitype_E(-0.1, analytical_mt)
+        @test_throws ArgumentError multitype_E(1.0, analytical_mt; steps_per_unit=0)
+        @test_throws ArgumentError multitype_E_over_time([0.0, Inf], analytical_mt)
+        @test_throws ArgumentError multitype_log_flow(NaN, analytical_mt)
+    end
+
+    @testset "multitype fully colored likelihood" begin
+        one_type_pars = MultitypeBDParameters([1.2;;], [0.4], [0.3], [0.5], [0.0;;], [0.8])
+        one_type_tree = MultitypeColoredTree(
+            1.0,
+            1;
+            segments=[MultitypeColoredSegment(1, 0.0, 1.0)],
+            present_samples=[1],
+        )
+        @test validate_multitype_colored_tree(one_type_tree, one_type_pars)
+        expected_one_type = log(0.8) + only(multitype_log_flow(1.0, one_type_pars))
+        @test multitype_colored_loglikelihood(one_type_tree, one_type_pars) ≈ expected_one_type
+        @test multitype_colored_likelihood(one_type_tree, one_type_pars) ≈ exp(expected_one_type)
+
+        two_type_pars = MultitypeBDParameters(
+            [0.5 0.7; 0.2 0.4],
+            [0.2, 0.3],
+            [0.6, 0.5],
+            [0.25, 0.8],
+            [0.0 0.9; 0.1 0.0],
+            [0.4, 0.6],
+        )
+        birth_tree = MultitypeColoredTree(
+            1.0,
+            1;
+            segments=[
+                MultitypeColoredSegment(1, 0.5, 1.0),
+                MultitypeColoredSegment(1, 0.0, 0.5),
+                MultitypeColoredSegment(2, 0.0, 0.5),
+            ],
+            births=[MultitypeColoredBirth(0.5, 1, 2)],
+            present_samples=[1, 2],
+        )
+        logflow_05 = multitype_log_flow(0.5, two_type_pars)
+        logflow_10 = multitype_log_flow(1.0, two_type_pars)
+        expected_birth = (logflow_10[1] - logflow_05[1]) + logflow_05[1] + logflow_05[2] +
+                         log(two_type_pars.birth[1, 2]) + log(two_type_pars.ρ₀[1]) + log(two_type_pars.ρ₀[2])
+        @test multitype_colored_loglikelihood(birth_tree, two_type_pars) ≈ expected_birth
+
+        transition_tree = MultitypeColoredTree(
+            1.0,
+            1;
+            segments=[
+                MultitypeColoredSegment(1, 0.4, 1.0),
+                MultitypeColoredSegment(2, 0.0, 0.4),
+            ],
+            transitions=[MultitypeColoredTransition(0.4, 1, 2)],
+            present_samples=[2],
+        )
+        expected_transition = (logflow_10[1] - multitype_log_flow(0.4, two_type_pars)[1]) +
+                              multitype_log_flow(0.4, two_type_pars)[2] +
+                              log(two_type_pars.transition[1, 2]) + log(two_type_pars.ρ₀[2])
+        @test multitype_colored_loglikelihood(transition_tree, two_type_pars) ≈ expected_transition
+
+        sampling_tree = MultitypeColoredTree(
+            1.0,
+            1;
+            segments=[
+                MultitypeColoredSegment(1, 0.7, 1.0),
+                MultitypeColoredSegment(1, 0.2, 0.7),
+            ],
+            terminal_samples=[MultitypeColoredSampling(0.2, 1)],
+            ancestral_samples=[MultitypeColoredSampling(0.7, 1)],
+        )
+        E02 = multitype_E(0.2, two_type_pars)[1]
+        lf02 = multitype_log_flow(0.2, two_type_pars)
+        lf07 = multitype_log_flow(0.7, two_type_pars)
+        expected_sampling = (logflow_10[1] - lf07[1]) + (lf07[1] - lf02[1]) +
+                            log(two_type_pars.sampling[1] * (1 - two_type_pars.removal_probability[1])) +
+                            log(two_type_pars.sampling[1] * (two_type_pars.removal_probability[1] +
+                                (1 - two_type_pars.removal_probability[1]) * E02))
+        @test multitype_colored_loglikelihood(sampling_tree, two_type_pars) ≈ expected_sampling
+
+        higher_birth = MultitypeBDParameters(
+            [0.5 1.4; 0.2 0.4],
+            two_type_pars.death,
+            two_type_pars.sampling,
+            two_type_pars.removal_probability,
+            two_type_pars.transition,
+            two_type_pars.ρ₀,
+        )
+        @test multitype_colored_loglikelihood(birth_tree, higher_birth) >
+              multitype_colored_loglikelihood(birth_tree, two_type_pars)
+
+        bad_root = MultitypeColoredTree(1.0, 1; segments=[MultitypeColoredSegment(2, 0.0, 1.0)])
+        @test_throws ArgumentError validate_multitype_colored_tree(bad_root, two_type_pars)
+        @test_throws ArgumentError MultitypeColoredTree(-1.0, 1; segments=[MultitypeColoredSegment(1, 0.0, 1.0)]) |>
+                                   tree -> validate_multitype_colored_tree(tree, one_type_pars)
+        bad_birth = MultitypeColoredTree(
+            1.0,
+            1;
+            segments=[MultitypeColoredSegment(1, 0.0, 1.0)],
+            births=[MultitypeColoredBirth(0.5, 1, 2)],
+        )
+        @test_throws ArgumentError multitype_colored_loglikelihood(bad_birth, one_type_pars)
+        impossible_present = MultitypeColoredTree(
+            1.0,
+            1;
+            segments=[MultitypeColoredSegment(1, 0.0, 1.0)],
+            present_samples=[1],
+        )
+        no_present_sampling = MultitypeBDParameters([0.0;;], [0.1], [0.0], [0.0], [0.0;;], [0.0])
+        @test_throws ArgumentError multitype_colored_loglikelihood(impossible_present, no_present_sampling)
+    end
+
+    @testset "multitype validation comparisons" begin
+        validation_pars = MultitypeBDParameters(
+            [0.15 0.08; 0.04 0.12],
+            [0.35, 0.25],
+            [0.20, 0.30],
+            [0.70, 0.40],
+            [0.0 0.10; 0.06 0.0],
+            [0.15, 0.25],
+        )
+        t_validation = 0.8
+        analytical_E = multitype_E(t_validation, validation_pars; steps_per_unit=512)
+        rng = MersenneTwister(90417)
+        nsims = 2_500
+        for initial_type in 1:2
+            no_observed = 0
+            for _ in 1:nsims
+                log = simulate_multitype_bd(rng, validation_pars, t_validation; initial_types=[initial_type])
+                no_observed += sum(multitype_S_at(log, t_validation)) == 0
+            end
+            @test no_observed / nsims ≈ analytical_E[initial_type] atol=0.04
+        end
+
+        k1_validation = MultitypeBDParameters([0.45;;], [0.30], [0.25], [0.60], [0.0;;], [0.20])
+        k1_single = ConstantRateBDParameters(0.45, 0.30, 0.25, 0.60, 0.20)
+        @test only(multitype_E(1.1, k1_validation; steps_per_unit=1024)) ≈ E_constant(1.1, k1_single) atol=2e-6
+        rng_k1 = MersenneTwister(90418)
+        k1_no_observed = 0
+        for _ in 1:nsims
+            log = simulate_multitype_bd(rng_k1, k1_validation, 1.1)
+            k1_no_observed += sum(multitype_S_at(log, 1.1)) == 0
+        end
+        @test k1_no_observed / nsims ≈ E_constant(1.1, k1_single) atol=0.04
+
+        flow_tree = MultitypeColoredTree(
+            1.0,
+            1;
+            segments=[MultitypeColoredSegment(1, 0.25, 1.0)],
+            terminal_samples=[MultitypeColoredSampling(0.25, 1)],
+        )
+        logflow_025 = multitype_log_flow(0.25, validation_pars)
+        logflow_100 = multitype_log_flow(1.0, validation_pars)
+        E025 = multitype_E(0.25, validation_pars)[1]
+        expected_flow_tree = (logflow_100[1] - logflow_025[1]) +
+                             log(validation_pars.sampling[1] *
+                                 (validation_pars.removal_probability[1] +
+                                  (1 - validation_pars.removal_probability[1]) * E025))
+        @test multitype_colored_loglikelihood(flow_tree, validation_pars) ≈ expected_flow_tree
+        @test multitype_colored_likelihood(flow_tree, validation_pars) ≈ exp(expected_flow_tree)
+
+        transition_tree = MultitypeColoredTree(
+            1.0,
+            1;
+            segments=[
+                MultitypeColoredSegment(1, 0.5, 1.0),
+                MultitypeColoredSegment(2, 0.0, 0.5),
+            ],
+            transitions=[MultitypeColoredTransition(0.5, 1, 2)],
+            present_samples=[2],
+        )
+        higher_transition = MultitypeBDParameters(
+            validation_pars.birth,
+            validation_pars.death,
+            validation_pars.sampling,
+            validation_pars.removal_probability,
+            [0.0 0.25; 0.06 0.0],
+            validation_pars.ρ₀,
+        )
+        @test multitype_colored_loglikelihood(transition_tree, higher_transition) >
+              multitype_colored_loglikelihood(transition_tree, validation_pars)
+    end
+
     @testset "TreeSim reconstructed extraction from BDEventLog" begin
         simple = BDEventLog([0.2, 0.5, 0.7], [2, 1, 2], [1, 0, 0], [Birth, FossilizedSampling, SerialSampling], 1, 1.0)
 

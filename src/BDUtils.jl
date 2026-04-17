@@ -9,6 +9,8 @@ include("simulation.jl")
 include("multitype/types.jl")
 include("multitype/simulation.jl")
 include("multitype/empirical.jl")
+include("multitype/analytical.jl")
+include("multitype/likelihood.jl")
 include("treesim_bridge.jl")
 include("pgf.jl")
 include("tree_statistics.jl")
@@ -43,6 +45,18 @@ export ConstantRateBDParameters,
        multitype_S_over_time,
        multitype_mean_N,
        validate_multitype_eventlog,
+       multitype_E,
+       multitype_E_over_time,
+       multitype_log_flow,
+       multitype_flow,
+       MultitypeColoredSegment,
+       MultitypeColoredBirth,
+       MultitypeColoredTransition,
+       MultitypeColoredSampling,
+       MultitypeColoredTree,
+       validate_multitype_colored_tree,
+       multitype_colored_loglikelihood,
+       multitype_colored_likelihood,
        NS_at,
        N_at,
        S_at,
