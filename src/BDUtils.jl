@@ -8,6 +8,7 @@ include("parameters.jl")
 include("simulation.jl")
 include("treesim_bridge.jl")
 include("pgf.jl")
+include("tree_statistics.jl")
 include("likelihood_constant.jl")
 include("fit_constant.jl")
 include("derived.jl")
@@ -73,6 +74,19 @@ export ConstantRateBDParameters,
        reconstructed_count_truncation,
        reconstructed_sampling_tail,
        reconstructed_sampling_truncation,
+       reconstructed_effective_rates,
+       reconstructed_y,
+       reconstructed_survival_kernel,
+       reconstructed_mean_lineages,
+       reconstructed_internal_branch_density,
+       reconstructed_external_branch_density,
+       reconstructed_branch_length_intensity,
+       reconstructed_node_depth_intensity,
+       reconstructed_node_depth_density,
+       reconstructed_one_tip_probability,
+       expected_reconstructed_cherries,
+       reconstructed_tree_stat_counts,
+       reconstructed_forest_stat_counts,
        γ,
        α,
        β,

@@ -1280,6 +1280,37 @@ const PGF_T_PAIRS = ((0.1, 0.6), (0.3, 1.4), (0.8, 2.2))
         @test fit.constant_rates.ρ₀ == 0.0
     end
 
+    @testset "reconstructed tree statistics analytics" begin
+        stats_pars = ConstantRateBDParameters(1.35, 0.45, 0.75, 0.65)
+        t0 = 0.0
+        T = 3.0
+
+        @test reconstructed_y(t0, T, stats_pars) ≈ 1 - unsampled_probability(t0, T, stats_pars)
+        rates = reconstructed_effective_rates(0.5, T, stats_pars)
+        @test rates.b ≈ transformed_birth_rate(0.5, T, stats_pars)
+        @test rates.d ≈ transformed_death_rate(0.5, T, stats_pars)
+        @test rates.R ≈ rates.b + rates.d
+
+        @test reconstructed_mean_lineages(t0, t0, T, stats_pars) ≈ 1.0
+        @test reconstructed_one_tip_probability(T, T, stats_pars) ≈ 1.0
+        @test isfinite(expected_reconstructed_cherries(t0, T, stats_pars))
+        @test expected_reconstructed_cherries(t0, T, stats_pars) > 0
+
+        q_from_internal = 1 - BDUtils._quad_simpson(
+            ℓ -> reconstructed_internal_branch_density(ℓ, t0, T, stats_pars),
+            t0,
+            T;
+            n=1024,
+        )
+        @test q_from_internal ≈ reconstructed_one_tip_probability(t0, T, stats_pars) atol=1e-8
+
+        tree_counts = reconstructed_tree_stat_counts(tiny_tree())
+        @test tree_counts.node_count == 1
+        @test tree_counts.cherries == 1
+        @test tree_counts.internal_branches == 1
+        @test tree_counts.external_branches == 2
+    end
+
     @testset "constant-rate numerical regression regimes" begin
         tree = tiny_tree()
 
