@@ -160,6 +160,87 @@ function original_process_validation_summary(seed, pars, tj, nsims; tail_atol=2e
     )
 end
 
+function reconstructed_validation_summary(seed, pars, tj, tk, nsims; tail_atol=2e-4, max_smax=1_000)
+    rng = MersenneTwister(seed)
+    logs = [simulate_bd(rng, pars, tk; apply_ρ₀=false) for _ in 1:nsims]
+
+    amax = reconstructed_count_truncation(0.0, tj, tk, pars; atol=tail_atol)
+    smax = reconstructed_sampling_truncation(0.0, tj, tk, pars; atol=tail_atol, max_smax=max_smax)
+    diagnostic = reconstructed_joint_pmf_table(amax, smax, 0.0, tj, tk, pars; diagnostics=true)
+    analytical_joint = analytical_joint_dict(diagnostic.table)
+    support = collect(keys(analytical_joint))
+
+    empirical_a = reconstructed_pmf_A(logs, tj)
+    empirical_joint = reconstructed_joint_pmf_AS(logs, tj)
+    analytical_a = analytical_marginal_dict([reconstructed_count_pmf(a, 0.0, tj, tk, pars) for a in 0:amax])
+    analytical_s = analytical_marginal_dict([reconstructed_sampling_marginal_pmf(s, 0.0, tj, tk, pars) for s in 0:smax])
+    s_counts = marginal_counts_NS(joint_counts_NS(logs, tj)).S
+    total = length(logs)
+    empirical_s = Dict(k => v / total for (k, v) in s_counts)
+
+    a_support = collect(keys(analytical_a))
+    s_support = collect(keys(analytical_s))
+    empirical_retained = sum(get(empirical_joint, key, 0.0) for key in support)
+    empirical_a_retained = sum(get(empirical_a, a, 0.0) for a in a_support)
+    empirical_s_retained = sum(get(empirical_s, s, 0.0) for s in s_support)
+    empirical_a_mean = sum(a * p for (a, p) in empirical_a)
+    η = reconstructed_eta(0.0, tj, tk, pars)
+    count_tail = reconstructed_count_tail(amax, 0.0, tj, tk, pars)
+    analytical_a_mean = sum(a * reconstructed_count_pmf(a, 0.0, tj, tk, pars) for a in 0:amax) +
+                        count_tail * ((amax + 1) + η / (1 - η))
+
+    return (
+        logs=logs,
+        diagnostic=diagnostic,
+        empirical_a=empirical_a,
+        empirical_s=empirical_s,
+        empirical_joint=empirical_joint,
+        analytical_a=analytical_a,
+        analytical_s=analytical_s,
+        analytical_joint=analytical_joint,
+        support=support,
+        a_support=a_support,
+        s_support=s_support,
+        empirical_retention_probability=empirical_retention_probability(logs, tj, tk),
+        analytical_retention_probability=1 - unsampled_probability(tj, tk, pars),
+        empirical_a_zero=get(empirical_a, 0, 0.0),
+        analytical_a_zero=reconstructed_count_pmf(0, 0.0, tj, tk, pars),
+        empirical_a_mean=empirical_a_mean,
+        analytical_a_mean=analytical_a_mean,
+        empirical_retained=empirical_retained,
+        empirical_a_retained=empirical_a_retained,
+        empirical_s_retained=empirical_s_retained,
+        joint_tv=total_variation_on_support(empirical_joint, analytical_joint, support),
+        joint_maxerr=max_abs_error_on_support(empirical_joint, analytical_joint, support),
+        a_tv=total_variation_on_support(empirical_a, analytical_a, a_support),
+        a_maxerr=max_abs_error_on_support(empirical_a, analytical_a, a_support),
+        s_tv=total_variation_on_support(empirical_s, analytical_s, s_support),
+        s_maxerr=max_abs_error_on_support(empirical_s, analytical_s, s_support),
+    )
+end
+
+function assert_reconstructed_validation(summary;
+                                         joint_tv_atol,
+                                         marginal_tv_atol,
+                                         maxerr_atol,
+                                         tail_slack,
+                                         retention_atol)
+    @test summary.diagnostic.retained_mass >= 1.0 - summary.diagnostic.count_tail_mass - summary.diagnostic.sampling_tail_mass - 1e-10
+    @test summary.diagnostic.retained_mass <= 1.0 + 1e-10
+    @test abs(summary.empirical_retention_probability - summary.analytical_retention_probability) <= retention_atol
+    @test abs(summary.empirical_a_zero - summary.analytical_a_zero) <= maxerr_atol
+    @test abs(summary.empirical_a_mean - summary.analytical_a_mean) <= 2 * maxerr_atol
+    @test abs(summary.empirical_retained - summary.diagnostic.retained_mass) <= tail_slack
+    @test abs(summary.empirical_a_retained - (1 - summary.diagnostic.count_tail_mass)) <= tail_slack
+    @test abs(summary.empirical_s_retained - (1 - summary.diagnostic.sampling_tail_mass)) <= tail_slack
+    @test summary.joint_tv <= joint_tv_atol
+    @test summary.a_tv <= marginal_tv_atol
+    @test summary.s_tv <= marginal_tv_atol
+    @test summary.joint_maxerr <= maxerr_atol
+    @test summary.a_maxerr <= maxerr_atol
+    @test summary.s_maxerr <= maxerr_atol
+end
+
 function assert_original_process_validation(summary;
                                             joint_tv_atol,
                                             marginal_tv_atol,
@@ -331,12 +412,55 @@ const PGF_T_PAIRS = ((0.1, 0.6), (0.3, 1.4), (0.8, 2.2))
         @test S_over_time(handcrafted, [0.0, 0.5, 1.0]) == [0, 1, 2]
         @test NS_over_time(handcrafted, [0.0, 0.7]) == [(N=1, S=0), (N=1, S=2)]
 
+        @test extant_lineages_at(handcrafted, 0.0) == [1]
+        @test extant_lineages_at(handcrafted, 0.2) == [1, 2]
+        @test extant_lineages_at(handcrafted, 0.7) == [2]
+        @test retained_lineages_at(handcrafted, 0.0) == [1]
+        @test retained_lineages_at(handcrafted, 0.2) == [1, 2]
+        @test retained_lineages_at(handcrafted, 0.5) == [1]
+        @test retained_lineages_at(handcrafted, 0.7) == Int[]
+        @test A_at(handcrafted, 0.0) == 1
+        @test A_over_time(handcrafted, [0.0, 0.2, 0.7, 1.0]) == [1, 2, 0, 0]
+
+        terminal_sample = BDEventLog([0.25, 1.0], [2, 2], [1, 0], [Birth, SerialSampling], 1, 1.0)
+        @test extant_lineages_at(terminal_sample, 0.5) == [1, 2]
+        @test retained_lineages_at(terminal_sample, 0.5) == [2]
+        @test retained_lineages_at(terminal_sample, 1.0) == Int[]
+        @test A_at(terminal_sample, 0.5) == 1
+
+        fossil_at_tj = BDEventLog([0.5], [1], [0], [FossilizedSampling], 1, 1.0)
+        @test retained_lineages_at(fossil_at_tj, 0.5) == Int[]
+        @test A_at(fossil_at_tj, 0.49, 0.5) == 1
+
+        serial_at_tj = BDEventLog([0.5], [1], [0], [SerialSampling], 1, 1.0)
+        @test extant_lineages_at(serial_at_tj, 0.5) == Int[]
+        @test A_at(serial_at_tj, 0.5) == 0
+        @test A_at(serial_at_tj, 0.49, 0.5) == 1
+
+        sample_after_tj = BDEventLog([0.500001], [1], [0], [FossilizedSampling], 1, 1.0)
+        @test A_at(sample_after_tj, 0.5) == 1
+        @test A_at(sample_after_tj, 0.500001) == 0
+
+        truncated = BDEventLog([0.8, 0.9], [1, 1], [0, 0], [FossilizedSampling, SerialSampling], 1, 1.0)
+        @test A_at(truncated, 0.5, 0.7) == 0
+        @test A_at(truncated, 0.5, 0.8) == 1
+        @test A_at(truncated, 0.85, 0.87) == 0
+        @test A_at(truncated, 0.85, 0.9) == 1
+        @test A_at(truncated, 0.8, 0.8) == 0
+        @test A_over_time(truncated, [0.5, 0.8, 0.85]; tk=0.9) == [1, 1, 1]
+        @test A_over_time(truncated, [0.5, 0.8]; tk=0.8) == [1, 0]
+
         extinct_unsampled = BDEventLog([0.1], [1], [0], [Death], 1, 1.0)
         counts = joint_counts_NS([handcrafted, extinct_unsampled], 1.0)
         @test counts == Dict((0, 2) => 1, (0, 0) => 1)
         @test joint_pmf_NS(counts) == Dict((0, 2) => 0.5, (0, 0) => 0.5)
         @test marginal_counts_NS(counts) == (N=Dict(0 => 2), S=Dict(2 => 1, 0 => 1))
         @test marginal_pmf_NS(counts) == (N=Dict(0 => 1.0), S=Dict(2 => 0.5, 0 => 0.5))
+        @test reconstructed_counts_A([handcrafted, extinct_unsampled], 0.0) == Dict(1 => 1, 0 => 1)
+        @test reconstructed_pmf_A([handcrafted, extinct_unsampled], 0.0) == Dict(1 => 0.5, 0 => 0.5)
+        @test reconstructed_joint_counts_AS([handcrafted, extinct_unsampled], 0.5) == Dict((1, 1) => 1, (0, 0) => 1)
+        @test reconstructed_joint_pmf_AS([handcrafted, extinct_unsampled], 0.5) == Dict((1, 1) => 0.5, (0, 0) => 0.5)
+        @test empirical_retention_probability([handcrafted, extinct_unsampled], 0.0) == 0.5
         @test joint_counts_NS([handcrafted, extinct_unsampled], [0.0, 1.0]) == [
             Dict((1, 0) => 2),
             Dict((0, 2) => 1, (0, 0) => 1),
@@ -365,6 +489,14 @@ const PGF_T_PAIRS = ((0.1, 0.6), (0.3, 1.4), (0.8, 2.2))
         @test_throws ArgumentError simulate_bd(ConstantRateBDParameters(1.0, 0.0, 0.0, 0.0), 1.0; initial_lineages=-1)
         @test_throws ArgumentError NS_at(handcrafted, -0.1)
         @test_throws ArgumentError joint_pmf_NS(Dict{Tuple{Int,Int},Int}())
+        @test_throws ArgumentError A_at(handcrafted, -0.1)
+        @test_throws ArgumentError A_at(handcrafted, 0.8, 0.7)
+        @test_throws ArgumentError A_at(handcrafted, 0.5, 1.1)
+        @test_throws ArgumentError retained_lineages_at(handcrafted, 0.8, 0.7)
+        @test_throws ArgumentError A_over_time(handcrafted, [0.1]; tk=1.1)
+        @test_throws ArgumentError reconstructed_pmf_A(Dict{Int,Int}())
+        @test_throws ArgumentError reconstructed_joint_pmf_AS(Dict{Tuple{Int,Int},Int}())
+        @test_throws ArgumentError empirical_retention_probability([extinct_unsampled], 0.5)
     end
 
     # Core analytical invariants: scalar closed forms, coefficients, PMFs,
@@ -518,6 +650,55 @@ const PGF_T_PAIRS = ((0.1, 0.6), (0.3, 1.4), (0.8, 2.2))
         count_series = joint_counts_NS(logs, times)
         @test length(count_series) == length(times)
         @test all(counts -> sum(values(counts)) == length(logs), count_series)
+    end
+
+    @testset "simulation validation: reconstructed process A and AS distribution" begin
+        cases = (
+            (name="subcritical_mixed_sampling", seed=41, pars=ConstantRateBDParameters(0.75, 1.0, 0.35, 0.35), tj=0.55, tk=1.3, nsims=10_000),
+            (name="near_critical_r_zero", seed=42, pars=ConstantRateBDParameters(1.05, 0.9, 0.55, 0.0), tj=0.5, tk=1.2, nsims=10_000),
+            (name="supercritical_high_sampling", seed=43, pars=ConstantRateBDParameters(1.45, 0.55, 0.9, 0.85), tj=0.45, tk=1.0, nsims=10_000),
+        )
+
+        for case in cases
+            summary = reconstructed_validation_summary(case.seed, case.pars, case.tj, case.tk, case.nsims; tail_atol=1e-4)
+            assert_reconstructed_validation(summary;
+                joint_tv_atol=0.03,
+                marginal_tv_atol=0.026,
+                maxerr_atol=0.022,
+                tail_slack=0.02,
+                retention_atol=0.025,
+            )
+        end
+    end
+
+    @testset "simulation validation: reconstructed multi-time queries" begin
+        reconstructed_pars = ConstantRateBDParameters(1.2, 0.7, 0.45, 0.6)
+        tk = 1.4
+        times = [0.3, 0.7, 1.1]
+        rng = MersenneTwister(51)
+        logs = [simulate_bd(rng, reconstructed_pars, tk; apply_ρ₀=false) for _ in 1:8_000]
+
+        count_series = reconstructed_counts_A(logs, times)
+        joint_series = reconstructed_joint_counts_AS(logs, times)
+        @test length(count_series) == length(times)
+        @test length(joint_series) == length(times)
+        @test all(counts -> sum(values(counts)) == length(logs), count_series)
+        @test all(counts -> sum(values(counts)) == length(logs), joint_series)
+
+        for (i, tj) in pairs(times)
+            summary = reconstructed_validation_summary(60 + i, reconstructed_pars, tj, tk, 8_000; tail_atol=1e-4)
+            empirical_from_shared_logs = reconstructed_joint_pmf_AS(reconstructed_joint_counts_AS(logs, tj))
+            @test total_variation_on_support(empirical_from_shared_logs, summary.analytical_joint, summary.support) <= 0.035
+            @test abs(sum(get(empirical_from_shared_logs, key, 0.0) for key in summary.support) -
+                      summary.diagnostic.retained_mass) <= 0.025
+            assert_reconstructed_validation(summary;
+                joint_tv_atol=0.035,
+                marginal_tv_atol=0.03,
+                maxerr_atol=0.025,
+                tail_slack=0.025,
+                retention_atol=0.03,
+            )
+        end
     end
 
     if get(ENV, "BDUTILS_STRESS_TESTS", "false") == "true"
@@ -849,6 +1030,16 @@ const PGF_T_PAIRS = ((0.1, 0.6), (0.3, 1.4), (0.8, 2.2))
         @test diagnostic.count_only_tail_mass + diagnostic.sampling_only_tail_mass + diagnostic.joint_tail_overlap_mass + diagnostic.retained_mass ≈ 1.0 atol=1e-11
         @test diagnostic.count_only_tail_mass + diagnostic.joint_tail_overlap_mass ≈ diagnostic.count_tail_mass atol=1e-11
         @test diagnostic.sampling_only_tail_mass + diagnostic.joint_tail_overlap_mass ≈ diagnostic.sampling_tail_mass atol=1e-11
+
+        audit_amax = reconstructed_count_truncation(ti, tj, tk, reconstructed_pars; atol=1e-10)
+        audit_smax = reconstructed_sampling_truncation(ti, tj, tk, reconstructed_pars; atol=1e-10, max_smax=2_000)
+        audit_table = reconstructed_joint_pmf_table(audit_amax, audit_smax, ti, tj, tk, reconstructed_pars)
+        for a in 0:audit_amax
+            @test sum(audit_table[a + 1, :]) ≈ reconstructed_count_pmf(a, ti, tj, tk, reconstructed_pars) atol=2e-10
+        end
+        for s in 0:audit_smax
+            @test sum(audit_table[:, s + 1]) ≈ reconstructed_sampling_marginal_pmf(s, ti, tj, tk, reconstructed_pars) atol=2e-10
+        end
 
         @test_throws ArgumentError reconstructed_pgf_series(-1, ti, tj, tk, reconstructed_pars)
         @test_throws ArgumentError reconstructed_pgf_series(2, tj, ti, tk, reconstructed_pars)
