@@ -25,6 +25,15 @@ end
 MultitypeColoredTransition(time::Real, from_type::Integer, to_type::Integer) =
     MultitypeColoredTransition(Float64(time), Int(from_type), Int(to_type))
 
+struct MultitypeColoredHiddenBirth
+    time::Float64
+    parent_type::Int
+    child_type::Int
+end
+
+MultitypeColoredHiddenBirth(time::Real, parent_type::Integer, child_type::Integer) =
+    MultitypeColoredHiddenBirth(Float64(time), Int(parent_type), Int(child_type))
+
 struct MultitypeColoredSampling
     time::Float64
     type::Int
@@ -39,6 +48,7 @@ struct MultitypeColoredTree
     segments::Vector{MultitypeColoredSegment}
     births::Vector{MultitypeColoredBirth}
     transitions::Vector{MultitypeColoredTransition}
+    hidden_births::Vector{MultitypeColoredHiddenBirth}
     terminal_samples::Vector{MultitypeColoredSampling}
     ancestral_samples::Vector{MultitypeColoredSampling}
     present_samples::Vector{Int}
@@ -49,13 +59,14 @@ function MultitypeColoredTree(origin_time::Real,
                               segments::AbstractVector{<:MultitypeColoredSegment}=MultitypeColoredSegment[],
                               births::AbstractVector{<:MultitypeColoredBirth}=MultitypeColoredBirth[],
                               transitions::AbstractVector{<:MultitypeColoredTransition}=MultitypeColoredTransition[],
+                              hidden_births::AbstractVector{<:MultitypeColoredHiddenBirth}=MultitypeColoredHiddenBirth[],
                               terminal_samples::AbstractVector{<:MultitypeColoredSampling}=MultitypeColoredSampling[],
                               ancestral_samples::AbstractVector{<:MultitypeColoredSampling}=MultitypeColoredSampling[],
                               present_samples::AbstractVector{<:Integer}=Int[])
     return MultitypeColoredTree(Float64(origin_time), Int(root_type),
                                 collect(segments), collect(births), collect(transitions),
-                                collect(terminal_samples), collect(ancestral_samples),
-                                Int.(present_samples))
+                                collect(hidden_births), collect(terminal_samples),
+                                collect(ancestral_samples), Int.(present_samples))
 end
 
 function _check_colored_type(type::Integer, K::Integer, name::AbstractString)
@@ -96,6 +107,11 @@ function validate_multitype_colored_tree(tree::MultitypeColoredTree, pars::Multi
         _check_colored_type(event.to_type, K, "transition to_type")
         event.from_type != event.to_type || throw(ArgumentError("transition types must differ."))
     end
+    for event in tree.hidden_births
+        _check_colored_time(event.time, tree.origin_time, "hidden birth time")
+        _check_colored_type(event.parent_type, K, "hidden birth parent_type")
+        _check_colored_type(event.child_type, K, "hidden birth child_type")
+    end
     for event in tree.terminal_samples
         _check_colored_time(event.time, tree.origin_time, "terminal sample time")
         _check_colored_type(event.type, K, "terminal sample type")
@@ -123,9 +139,12 @@ Log-likelihood for a manually specified fully colored multitype tree.
 The tree representation is intentionally critical-event based. `segments`
 encode fully typed no-observed-event intervals and contribute the diagonal
 `multitype_log_flow` transport over `[start_time,end_time]`. Observed typed
-births contribute `birth[parent_type, child_type]`; observed anagenetic
-transitions contribute `transition[from_type, to_type]`; present-day samples
-contribute `ρ₀[type]`. A terminal serial sample at age `t` contributes
+births with both retained sides contribute `birth[parent_type, child_type]`.
+Collapsed hidden births contribute `birth[parent_type, child_type] *
+E_parent_type(t)`, meaning the retained observed lineage follows the child side
+while the continuing parent side has no observed descendants. Observed
+anagenetic transitions contribute `transition[from_type, to_type]`; present-day
+samples contribute `ρ₀[type]`. A terminal serial sample at age `t` contributes
 `sampling[type] * (removal_probability[type] + (1-removal_probability[type]) *
 E_type(t))`, because a non-removing sampled lineage must have no later observed
 descendants to be terminal. An ancestral sample contributes
@@ -141,6 +160,7 @@ function multitype_colored_loglikelihood(tree::MultitypeColoredTree,
     times = Float64[0.0, tree.origin_time]
     append!(times, (segment.start_time for segment in tree.segments))
     append!(times, (segment.end_time for segment in tree.segments))
+    append!(times, (event.time for event in tree.hidden_births))
     append!(times, (event.time for event in tree.terminal_samples))
     unique_times = sort!(unique(times))
 
@@ -161,6 +181,11 @@ function multitype_colored_loglikelihood(tree::MultitypeColoredTree,
     end
     for event in tree.transitions
         ll += _log_positive_rate(pars.transition[event.from_type, event.to_type], "transition rate")
+    end
+    for event in tree.hidden_births
+        E = Evals[event.time][event.parent_type]
+        ll += _log_positive_rate(pars.birth[event.parent_type, event.child_type] * E,
+                                 "hidden birth factor")
     end
     for event in tree.terminal_samples
         type = event.type

@@ -11,11 +11,13 @@ include("multitype/simulation.jl")
 include("multitype/empirical.jl")
 include("multitype/analytical.jl")
 include("multitype/likelihood.jl")
+include("multitype/bridge.jl")
 include("treesim_bridge.jl")
 include("pgf.jl")
 include("tree_statistics.jl")
 include("likelihood_constant.jl")
 include("fit_constant.jl")
+include("multitype/fit.jl")
 include("derived.jl")
 
 export ConstantRateBDParameters,
@@ -52,11 +54,22 @@ export ConstantRateBDParameters,
        MultitypeColoredSegment,
        MultitypeColoredBirth,
        MultitypeColoredTransition,
+       MultitypeColoredHiddenBirth,
        MultitypeColoredSampling,
        MultitypeColoredTree,
        validate_multitype_colored_tree,
        multitype_colored_loglikelihood,
        multitype_colored_likelihood,
+       multitype_colored_tree_from_eventlog,
+       validate_multitype_colored_tree_from_eventlog,
+       pruned_multitype_colored_tree_from_eventlog,
+       validate_pruned_multitype_colored_tree_from_eventlog,
+       MultitypeMLESpec,
+       multitype_pack_parameters,
+       multitype_unpack_parameters,
+       multitype_loglikelihood,
+       multitype_negloglikelihood,
+       fit_multitype_mle,
        NS_at,
        N_at,
        S_at,
