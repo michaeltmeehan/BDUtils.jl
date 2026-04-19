@@ -1,11 +1,20 @@
 # Constant-Rate Multitype Birth-Death-Sampling
 
+Up: [`index.md`](index.md)
+
+This page has been superseded by:
+
+- [`multitype_simulation.md`](multitype_simulation.md)
+- [`multitype_coloured_trees.md`](multitype_coloured_trees.md)
+
+It is retained as an older combined note.
+
 This note documents the current multitype layer in `BDUtils.jl`. It is a
 constant-rate, fully typed framework for simulation, observed-tree likelihood
 evaluation, narrow scoring/fitting, and validation scripts.
 
 The implementation is deliberately conservative. It does not yet implement
-hidden-color marginalization, time-varying rates, Bayesian inference, or broad
+hidden-colour marginalisation, time-varying rates, Bayesian inference, or broad
 TreeSim conversion.
 
 ## Process Semantics
@@ -58,7 +67,7 @@ The current ODE convention matches the simulator:
 transport factors for typed observed segments. These are used by the likelihood
 layer.
 
-## Observed Colored Trees
+## Observed Coloured Trees
 
 `MultitypeColoredTree` is the current likelihood input representation. It is a
 critical-event representation, not a general tree object.
@@ -73,7 +82,7 @@ It contains:
 - `hidden_births`: collapsed unary birth events where the observed lineage
   follows the child side and the continuing parent side has no observed
   descendants.
-- `terminal_samples`: sampled tips before or at the horizon.
+- `terminal_samples`: sampled nodes before or at the horizon.
 - `ancestral_samples`: non-removing sampled ancestors with retained observed
   future.
 - `present_samples`: sampled lineages at the observation horizon.
@@ -129,13 +138,13 @@ general inference framework.
 
 The following are intentionally not supported yet:
 
-- hidden-color marginalization;
+- hidden-colour marginalisation;
 - time-varying multitype rates;
 - Bayesian inference;
 - model selection over zero/nonzero rate support;
 - fitting `removal_probability` or `ρ₀`;
 - multi-root observed extraction;
-- direct general TreeSim colored-tree conversion;
+- direct general TreeSim coloured-tree conversion;
 - broad end-to-end workflow orchestration.
 
 ## Worked Example
@@ -146,6 +155,6 @@ Run:
 julia --project=. scripts/multitype/worked_constant_rate_pipeline.jl
 ```
 
-The script simulates histories, extracts pruned observed colored trees, scores
+The script simulates histories, extracts pruned observed coloured trees, scores
 truth and initial templates, fits a selected birth-rate entry, and prints a
 compact summary.
