@@ -14,7 +14,8 @@ sections below to navigate to the relevant component.
 - [`original_process_counts.md`](original_process_counts.md): original-process
   `(N, S)` analytical and empirical count distributions.
 - [`reconstructed_process.md`](reconstructed_process.md): retained lineages,
-  reconstructed-process distributions, and reconstructed tree statistics.
+  raw and conditioned reconstructed-process distributions, and reconstructed
+  tree statistics.
 - [`api_status.md`](api_status.md): current public/provisional status by
   component.
 

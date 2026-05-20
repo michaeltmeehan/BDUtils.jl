@@ -7,6 +7,8 @@ Run scripts from the package root with `julia --project=. path/to/script.jl`.
 | Path | Category | Related Docs | Description |
 |---|---|---|---|
 | `scripts/compare_reconstructed_tree_statistics.jl` | validation | `docs/reconstructed_process.md` | Simulates single-type histories, extracts reconstructed forests, and compares selected reconstructed tree-statistic summaries with analytical quantities. |
+| `scripts/validation/conditioned_reconstructed_count_validation.jl` | validation | `docs/reconstructed_process.md` | Manually runnable Monte Carlo check for `conditioned_reconstructed_count_pmf`, conditioning simulations on `A_at(log, t_i, t_k) == 1`. |
+| `scripts/validation/conditioned_reconstructed_joint_validation.jl` | validation | `docs/reconstructed_process.md` | Manually runnable Monte Carlo check for conditioned reconstructed joint probabilities, conditioning simulations on `A_at(log, t_i, t_k) == 1`. |
 | `validation/treepar_compare.jl` | validation | `docs/constant_rate_tree_likelihood.md`, `validation/TREEPAR_VALIDATION_SUMMARY.md` | Compares helper-level and restricted full-tree calculations against TreePar conventions. |
 | `validation/treepar_compare.R` | validation | `docs/constant_rate_tree_likelihood.md`, `validation/TREEPAR_VALIDATION_SUMMARY.md` | R wrapper used by the TreePar comparison script. |
 | `scripts/uncoloured_mtbd2_known_tips_toy.jl` | example | `docs/uncoloured_mtbd2.md` | Scores small hand-built `TreeSim.Tree` examples under the uncoloured MTBD-2 likelihood with known, unknown, and mixed sampled-node states. |
@@ -21,4 +23,6 @@ Run scripts from the package root with `julia --project=. path/to/script.jl`.
 | `scripts/multitype/validate_multitype_fit_pipeline.jl` | validation | `docs/multitype_coloured_trees.md` | Runs small multitype simulation-fitting scenarios and checks that fitted likelihoods improve over initial templates. |
 
 The validation scripts are useful for checking implementation assumptions, but
-they should not be read as user-facing API contracts.
+they should not be read as user-facing API contracts. They are run manually and
+are not part of the default package test suite unless explicitly mirrored by a
+test in `test/runtests.jl`.

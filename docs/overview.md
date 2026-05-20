@@ -28,9 +28,11 @@ exists because an observed or reconstructed tree omits extinct or unsampled
 side branches from the original process.
 
 Do not treat `(N, S)` and `(A, S)` distributions as interchangeable. Original
-process helpers describe the full process; reconstructed helpers describe the
-process after conditioning on future observation. See
-[`reconstructed_process.md`](reconstructed_process.md).
+process helpers describe the full process; reconstructed helpers describe
+retained-lineage quantities over a future observation horizon. See
+[`reconstructed_process.md`](reconstructed_process.md) for the distinction
+between raw thinned `reconstructed_*` helpers and
+`conditioned_reconstructed_*` helpers normalized conditional on `A_i^k = 1`.
 
 ## Simulation, Analytics, And Likelihood
 

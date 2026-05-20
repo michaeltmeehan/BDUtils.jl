@@ -13,7 +13,8 @@ superspreader parameterisation.
 - Original-process analytical count distributions for active and sampled
   lineages.
 - Reconstructed-process analytics for retained lineages and reconstructed tree
-  statistics.
+  statistics, including raw thinned `reconstructed_*` helpers and conditioned
+  `conditioned_reconstructed_*` helpers.
 - Constant-rate tree likelihoods for admissible `TreeSim.jl` trees.
 - Multitype coloured-tree simulation, extraction, likelihood, and narrow fitting
   helpers.
@@ -45,6 +46,9 @@ julia --project=. -e 'using Pkg; Pkg.test()'
   [`docs/constant_rate_core.md`](docs/constant_rate_core.md),
   [`docs/original_process_counts.md`](docs/original_process_counts.md), and
   [`docs/reconstructed_process.md`](docs/reconstructed_process.md).
+  The reconstructed-process notes distinguish backward-compatible
+  `reconstructed_*` raw thinning calculations from `conditioned_reconstructed_*`
+  probabilities conditional on `A_i^k = 1`.
 - See tree extraction and likelihood conventions in
   [`docs/constant_rate_trees.md`](docs/constant_rate_trees.md) and
   [`docs/constant_rate_tree_likelihood.md`](docs/constant_rate_tree_likelihood.md).

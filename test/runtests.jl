@@ -2715,6 +2715,44 @@ const PGF_T_PAIRS = ((0.1, 0.6), (0.3, 1.4), (0.8, 2.2))
         @test_throws ArgumentError transformed_birth_rate(0.0, 1.0, ConstantRateBDParameters(1.0, 0.5, 0.0, 0.0))
     end
 
+    @testset "public API: conditioned reconstructed scalar helpers" begin
+        ti = 0.0
+        tk = 2.4
+
+        for reconstructed_pars in KENDALL_REGIMES
+            for w in (0.0, 0.4, 1.0), tj in (0.35, 1.0, 1.7)
+                pᵢ = unsampled_probability(ti, tk, reconstructed_pars)
+                qᵢ = 1 - pᵢ
+                raw_α = reconstructed_alpha_bd(w, ti, tj, tk, reconstructed_pars)
+                raw_β = reconstructed_beta_bd(w, ti, tj, tk, reconstructed_pars)
+                raw_γ = reconstructed_gamma_bd(w, ti, tj, tk, reconstructed_pars)
+
+                @test conditioned_reconstructed_alpha_bd(w, ti, tj, tk, reconstructed_pars) ≈ (raw_α - pᵢ) / qᵢ
+                @test conditioned_reconstructed_beta_bd(w, ti, tj, tk, reconstructed_pars) ≈ raw_β / qᵢ
+                @test conditioned_reconstructed_gamma_bd(w, ti, tj, tk, reconstructed_pars) ≈ raw_γ
+
+                z = 0.55
+                raw_pgf = reconstructed_pgf(z, w, ti, tj, tk, reconstructed_pars)
+                @test conditioned_reconstructed_pgf(z, w, ti, tj, tk, reconstructed_pars) ≈ (raw_pgf - pᵢ) / qᵢ
+            end
+
+            for tj in (0.35, 1.0, 1.7)
+                ξ = conditioned_reconstructed_xi(ti, tj, tk, reconstructed_pars)
+                η = conditioned_reconstructed_eta(ti, tj, tk, reconstructed_pars)
+                β1 = conditioned_reconstructed_beta_bd(1.0, ti, tj, tk, reconstructed_pars)
+                @test β1 ≈ (1 - ξ) * (1 - η) rtol=2e-11 atol=2e-13
+                @test conditioned_reconstructed_count_pmf(0, ti, tj, tk, reconstructed_pars) ≈ ξ
+                @test conditioned_reconstructed_count_pmf(1, ti, tj, tk, reconstructed_pars) ≈ (1 - ξ) * (1 - η)
+                @test conditioned_reconstructed_count_pmf(4, ti, tj, tk, reconstructed_pars) ≈ (1 - ξ) * (1 - η) * η^3
+                @test sum(conditioned_reconstructed_count_pmf(a, ti, tj, tk, reconstructed_pars) for a in 0:200) ≈ 1.0 atol=1e-12
+            end
+        end
+
+        @test_throws ArgumentError conditioned_reconstructed_alpha_bd(1.0, 1.1, 1.0, 2.0, pars)
+        @test_throws ArgumentError conditioned_reconstructed_count_pmf(-1, 0.0, 1.0, 2.0, pars)
+        @test_throws ArgumentError conditioned_reconstructed_alpha_bd(1.0, 1.0, 1.0, 1.0, pars)
+    end
+
     @testset "public API: reconstructed series, PMF, marginals, and truncation" begin
         ti = 0.0
         tj = 0.85
@@ -2790,6 +2828,177 @@ const PGF_T_PAIRS = ((0.1, 0.6), (0.3, 1.4), (0.8, 2.2))
         @test_throws ArgumentError reconstructed_sampling_truncation(ti, tj, tk, reconstructed_pars; atol=1e-14, max_smax=0)
         degenerate_series = reconstructed_pgf_series(2, 0.0, 0.5, 1.0, ConstantRateBDParameters(1.0, 0.5, 0.0, 0.0))
         @test all(v -> all(isfinite, v), degenerate_series)
+    end
+
+    @testset "public API: conditioned reconstructed series, PMF, marginals, and truncation" begin
+        ti = 0.0
+        tj = 0.85
+        tk = 2.4
+        reconstructed_pars = ConstantRateBDParameters(1.8, 0.5, 0.7, 0.4)
+        smax = 30
+        raw_αs, raw_βs, raw_γs = reconstructed_pgf_series(smax, ti, tj, tk, reconstructed_pars)
+        αs, βs, γs = conditioned_reconstructed_pgf_series(smax, ti, tj, tk, reconstructed_pars)
+
+        pᵢ = unsampled_probability(ti, tk, reconstructed_pars)
+        qᵢ = 1 - pᵢ
+        expected_αs = copy(raw_αs)
+        expected_αs[1] -= pᵢ
+        expected_αs ./= qᵢ
+        @test αs ≈ expected_αs
+        @test βs ≈ raw_βs ./ qᵢ
+        @test γs ≈ raw_γs
+
+        for w in (0.0, 0.25, 0.65)
+            powers = w .^ (0:smax)
+            @test sum(αs .* powers) ≈ conditioned_reconstructed_alpha_bd(w, ti, tj, tk, reconstructed_pars) atol=1e-11
+            @test sum(βs .* powers) ≈ conditioned_reconstructed_beta_bd(w, ti, tj, tk, reconstructed_pars) atol=1e-11
+            @test sum(γs .* powers) ≈ conditioned_reconstructed_gamma_bd(w, ti, tj, tk, reconstructed_pars) atol=1e-11
+        end
+
+        table = conditioned_reconstructed_joint_pmf_table(9, 7, ti, tj, tk, reconstructed_pars)
+        @test size(table) == (10, 8)
+        @test table[1, 3] ≈ conditioned_reconstructed_joint_pmf(0, 2, ti, tj, tk, reconstructed_pars)
+        @test table[2, 3] ≈ conditioned_reconstructed_joint_pmf(1, 2, ti, tj, tk, reconstructed_pars)
+        @test table[5, 4] ≈ conditioned_reconstructed_joint_pmf(4, 3, ti, tj, tk, reconstructed_pars)
+        @test all(x -> x >= -1e-13, table)
+
+        f = copy(βs)
+        for _ in 2:4
+            next = zeros(eltype(f), length(f))
+            for i in eachindex(next), k in 1:i
+                next[i] += γs[k] * f[i - k + 1]
+            end
+            f = next
+        end
+        @test conditioned_reconstructed_joint_pmf(0, 5, ti, tj, tk, reconstructed_pars) ≈ αs[6]
+        @test conditioned_reconstructed_joint_pmf(4, 5, ti, tj, tk, reconstructed_pars) ≈ f[6]
+
+        z = 0.45
+        w_inside = 0.35
+        count_cut = conditioned_reconstructed_count_truncation(ti, tj, tk, reconstructed_pars; atol=1e-11)
+        sampling_cut = conditioned_reconstructed_sampling_truncation(ti, tj, tk, reconstructed_pars; atol=1e-11, max_smax=2_000)
+        pgf_table = conditioned_reconstructed_joint_pmf_table(count_cut, sampling_cut, ti, tj, tk, reconstructed_pars)
+        @test table_pgf_sum(pgf_table, z, w_inside) ≈ conditioned_reconstructed_pgf(z, w_inside, ti, tj, tk, reconstructed_pars) atol=3e-10
+
+        @test conditioned_reconstructed_count_pmf(0, ti, tj, tk, reconstructed_pars) ≈ conditioned_reconstructed_xi(ti, tj, tk, reconstructed_pars)
+        @test conditioned_reconstructed_count_pmf(4, ti, tj, tk, reconstructed_pars) ≈ sum(conditioned_reconstructed_joint_pmf(4, s, ti, tj, tk, reconstructed_pars) for s in 0:120) atol=1e-12
+        @test conditioned_reconstructed_sampling_marginal_pmf(3, ti, tj, tk, reconstructed_pars) ≈ sum(conditioned_reconstructed_joint_pmf(a, 3, ti, tj, tk, reconstructed_pars) for a in 0:120) atol=1e-12
+
+        @test conditioned_reconstructed_count_tail(5, ti, tj, tk, reconstructed_pars) >= 0
+        @test conditioned_reconstructed_count_tail(6, ti, tj, tk, reconstructed_pars) <= conditioned_reconstructed_count_tail(5, ti, tj, tk, reconstructed_pars)
+        @test conditioned_reconstructed_count_tail(count_cut, ti, tj, tk, reconstructed_pars) <= 1e-11
+        if count_cut > 0
+            @test conditioned_reconstructed_count_tail(count_cut - 1, ti, tj, tk, reconstructed_pars) > 1e-11
+        end
+        @test sum(conditioned_reconstructed_count_pmf(a, ti, tj, tk, reconstructed_pars) for a in 0:count_cut) + conditioned_reconstructed_count_tail(count_cut, ti, tj, tk, reconstructed_pars) ≈ 1.0
+
+        @test conditioned_reconstructed_sampling_tail(5, ti, tj, tk, reconstructed_pars) ≈ 1 - sum(conditioned_reconstructed_sampling_marginal_pmf(s, ti, tj, tk, reconstructed_pars) for s in 0:5) atol=1e-12
+        @test conditioned_reconstructed_sampling_tail(5, ti, tj, tk, reconstructed_pars) >= 0
+        @test conditioned_reconstructed_sampling_tail(6, ti, tj, tk, reconstructed_pars) <= conditioned_reconstructed_sampling_tail(5, ti, tj, tk, reconstructed_pars)
+        @test conditioned_reconstructed_sampling_tail(sampling_cut, ti, tj, tk, reconstructed_pars) <= 1e-11
+        if sampling_cut > 0
+            @test conditioned_reconstructed_sampling_tail(sampling_cut - 1, ti, tj, tk, reconstructed_pars) > 1e-11
+        end
+
+        diagnostic = conditioned_reconstructed_joint_pmf_table(9, 7, ti, tj, tk, reconstructed_pars; diagnostics=true)
+        @test diagnostic.table == table
+        @test diagnostic.amax == 9
+        @test diagnostic.smax == 7
+        @test diagnostic.retained_mass ≈ sum(table)
+        @test diagnostic.count_tail_mass ≈ conditioned_reconstructed_count_tail(9, ti, tj, tk, reconstructed_pars)
+        @test diagnostic.sampling_tail_mass ≈ conditioned_reconstructed_sampling_tail(7, ti, tj, tk, reconstructed_pars)
+        @test diagnostic.missing_mass ≈ 1 - diagnostic.retained_mass
+        @test diagnostic.retained_mass + diagnostic.missing_mass ≈ 1.0 atol=1e-12
+        @test diagnostic.count_only_tail_mass + diagnostic.sampling_only_tail_mass + diagnostic.joint_tail_overlap_mass + diagnostic.retained_mass ≈ 1.0 atol=1e-11
+
+        audit_amax = conditioned_reconstructed_count_truncation(ti, tj, tk, reconstructed_pars; atol=1e-10)
+        audit_smax = conditioned_reconstructed_sampling_truncation(ti, tj, tk, reconstructed_pars; atol=1e-10, max_smax=2_000)
+        audit_table = conditioned_reconstructed_joint_pmf_table(audit_amax, audit_smax, ti, tj, tk, reconstructed_pars)
+        for a in 0:audit_amax
+            @test sum(audit_table[a + 1, :]) ≈ conditioned_reconstructed_count_pmf(a, ti, tj, tk, reconstructed_pars) atol=2e-10
+        end
+        for s in 0:audit_smax
+            @test sum(audit_table[:, s + 1]) ≈ conditioned_reconstructed_sampling_marginal_pmf(s, ti, tj, tk, reconstructed_pars) atol=2e-10
+        end
+
+        @test_throws ArgumentError conditioned_reconstructed_pgf_series(-1, ti, tj, tk, reconstructed_pars)
+        @test_throws ArgumentError conditioned_reconstructed_joint_pmf(-1, 0, ti, tj, tk, reconstructed_pars)
+        @test_throws ArgumentError conditioned_reconstructed_joint_pmf(0, -1, ti, tj, tk, reconstructed_pars)
+        @test_throws ArgumentError conditioned_reconstructed_count_truncation(ti, tj, tk, reconstructed_pars; atol=-1.0)
+        @test_throws ArgumentError conditioned_reconstructed_sampling_truncation(ti, tj, tk, reconstructed_pars; atol=-1.0)
+        @test_throws ArgumentError conditioned_reconstructed_sampling_truncation(ti, tj, tk, reconstructed_pars; atol=1e-14, max_smax=0)
+        @test_throws ArgumentError conditioned_reconstructed_pgf_series(2, 1.0, 1.0, 1.0, reconstructed_pars)
+        @test_throws ArgumentError conditioned_reconstructed_joint_pmf_table(2, 2, 1.0, 1.0, 1.0, reconstructed_pars)
+        @test_throws ArgumentError conditioned_reconstructed_count_tail(2, 1.0, 1.0, 1.0, reconstructed_pars)
+        @test_throws ArgumentError conditioned_reconstructed_sampling_tail(2, 1.0, 1.0, 1.0, reconstructed_pars)
+    end
+
+    @testset "algebraic identities: conditioned reconstructed process" begin
+        identity_pars = (
+            ConstantRateBDParameters(1.4, 0.6, 0.7, 1.0),
+            ConstantRateBDParameters(1.8, 0.5, 0.7, 0.4),
+            ConstantRateBDParameters(0.9, 1.1, 0.4, 0.6),
+            ConstantRateBDParameters(1.5, 0.2, 2.5, 0.95),
+        )
+        triples = ((0.0, 0.55, 1.8), (0.2, 0.9, 2.4))
+        quadruples = ((0.0, 0.45, 1.1, 2.0), (0.2, 0.8, 1.5, 2.7))
+
+        function count_convolve(x, y)
+            out = zeros(promote_type(eltype(x), eltype(y)), length(x) + length(y) - 1)
+            for i in eachindex(x), j in eachindex(y)
+                out[i + j - 1] += x[i] * y[j]
+            end
+            return out
+        end
+
+        for reconstructed_pars in identity_pars
+            for (ti, tj, tk) in triples
+                @test conditioned_reconstructed_pgf(1.0, 1.0, ti, tj, tk, reconstructed_pars) ≈ 1.0 rtol=1e-10 atol=1e-12
+
+                α1 = conditioned_reconstructed_alpha_bd(1.0, ti, tj, tk, reconstructed_pars)
+                β1 = conditioned_reconstructed_beta_bd(1.0, ti, tj, tk, reconstructed_pars)
+                γ1 = conditioned_reconstructed_gamma_bd(1.0, ti, tj, tk, reconstructed_pars)
+                @test α1 + β1 / (1 - γ1) ≈ 1.0 rtol=1e-10 atol=1e-12
+
+                @test conditioned_reconstructed_alpha_bd(0.0, ti, tj, tk, reconstructed_pars) ≈ 0.0 atol=1e-12
+                @test conditioned_reconstructed_pgf(0.0, 0.0, ti, tj, tk, reconstructed_pars) ≈ 0.0 atol=1e-12
+
+                β0 = conditioned_reconstructed_beta_bd(0.0, ti, tj, tk, reconstructed_pars)
+                γ0 = conditioned_reconstructed_gamma_bd(0.0, ti, tj, tk, reconstructed_pars)
+                for z in (0.0, 0.2, 0.6, 0.9)
+                    @test conditioned_reconstructed_pgf(z, 0.0, ti, tj, tk, reconstructed_pars) ≈
+                        β0 * z / (1 - γ0 * z) rtol=1e-10 atol=1e-12
+                end
+
+                ξ = conditioned_reconstructed_xi(ti, tj, tk, reconstructed_pars)
+                η = conditioned_reconstructed_eta(ti, tj, tk, reconstructed_pars)
+                single = [conditioned_reconstructed_count_pmf(a, ti, tj, tk, reconstructed_pars) for a in 0:400]
+                two_lineage = count_convolve(single, single)
+                three_lineage = count_convolve(two_lineage, single)
+                @test sum(two_lineage) ≈ 1.0 rtol=1e-10 atol=1e-11
+                @test sum(three_lineage) ≈ 1.0 rtol=1e-10 atol=1e-11
+                @test ξ + (1 - ξ) * (1 - η) / (1 - η) ≈ 1.0 rtol=1e-10 atol=1e-12
+            end
+
+            for (ti, tj, tk, tl) in quadruples
+                β_ik = conditioned_reconstructed_beta_bd(0.0, ti, tk, tl, reconstructed_pars)
+                β_ij = conditioned_reconstructed_beta_bd(0.0, ti, tj, tl, reconstructed_pars)
+                β_jk = conditioned_reconstructed_beta_bd(0.0, tj, tk, tl, reconstructed_pars)
+                γ_ik = conditioned_reconstructed_gamma_bd(0.0, ti, tk, tl, reconstructed_pars)
+                γ_ij = conditioned_reconstructed_gamma_bd(0.0, ti, tj, tl, reconstructed_pars)
+                γ_jk = conditioned_reconstructed_gamma_bd(0.0, tj, tk, tl, reconstructed_pars)
+
+                @test β_ik ≈ β_ij * β_jk rtol=1e-10 atol=1e-12
+                @test γ_ik ≈ γ_jk + γ_ij * β_jk rtol=1e-10 atol=1e-12
+
+                for z in (0.0, 0.15, 0.5, 0.85)
+                    direct = conditioned_reconstructed_pgf(z, 0.0, ti, tk, tl, reconstructed_pars)
+                    inner = conditioned_reconstructed_pgf(z, 0.0, tj, tk, tl, reconstructed_pars)
+                    composed = conditioned_reconstructed_pgf(inner, 0.0, ti, tj, tl, reconstructed_pars)
+                    @test direct ≈ composed rtol=1e-10 atol=1e-12
+                end
+            end
+        end
     end
 
     # Extended reconstructed/conditioned residuals now exercise the public API.

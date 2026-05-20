@@ -69,8 +69,29 @@ after conditioning on future observation.
 ## Reconstructed PGFs And Count Distributions
 
 The reconstructed PGF helpers describe `A(t_j)` and related sampled-count
-quantities from one lineage at `t_i`, conditioned on the observation horizon
-`t_k`.
+quantities from one lineage at `t_i` over the observation horizon `t_k`.
+
+There are two related API prefixes:
+
+| API prefix | Conditioning / interpretation |
+| --- | --- |
+| `reconstructed_*` | raw thinning of hidden lineage, `G_ij(p_j^k + q_j^k z,w)` |
+| `conditioned_reconstructed_*` | conditioned on `A_i^k = 1`, normalized by `q_i^k` |
+
+The older `reconstructed_*` functions are preserved for backward
+compatibility. They evaluate the raw thinned hidden-lineage PGF and are not
+conditioned on the initial lineage at `t_i` being reconstructed. The newer
+`conditioned_reconstructed_*` functions evaluate
+
+```text
+Gtilde_ij^k(z,w) = (G_ij(p_j^k + q_j^k z,w) - p_i^k) / q_i^k
+```
+
+and represent
+
+```text
+E[z^(A_j^k) w^(S_ij) | A_i^k = 1, S_i = 0].
+```
 
 Common entry points:
 
@@ -82,10 +103,19 @@ Common entry points:
 - `reconstructed_sampling_marginal_pmf(s, t_i, t_j, t_k, pars)`
 - `reconstructed_count_tail` and `reconstructed_sampling_tail`
 - `reconstructed_count_truncation` and `reconstructed_sampling_truncation`
+- `conditioned_reconstructed_pgf(z, w, t_i, t_j, t_k, pars)`
+- `conditioned_reconstructed_pgf_series(smax, t_i, t_j, t_k, pars)`
+- `conditioned_reconstructed_count_pmf(a, t_i, t_j, t_k, pars)`
+- `conditioned_reconstructed_joint_pmf(a, s, t_i, t_j, t_k, pars)`
+- `conditioned_reconstructed_joint_pmf_table(amax, smax, t_i, t_j, t_k, pars)`
 
 The `S(t_j)` component in reconstructed joint helpers is still the cumulative
 sample count up to `t_j`; the reconstructed part is the retained lineage count
 `A(t_j)`.
+
+For probabilities of the form `P(A_j^k = a | A_i^k = 1)`,
+`conditioned_reconstructed_count_pmf(a, t_i, t_j, t_k, pars)` is the preferred
+entry point.
 
 ## Reconstructed Tree Statistics
 
@@ -136,5 +166,19 @@ println("effective rates at t_j = ", reconstructed_effective_rates(t_j, t_k, par
 
 The empirical `A` distribution is estimated by simulating the original process
 to `t_k` and then retaining only lineages with sampled descendants in
-`(t_j, t_k]`. The analytical values are for the same reconstructed process from
-one lineage at `t_i`.
+`(t_j, t_k]`. The analytical values shown here use the backward-compatible raw
+`reconstructed_count_pmf` convention from one lineage at `t_i`; use
+`conditioned_reconstructed_count_pmf` when the target probability is conditioned
+on `A_i^k = 1`.
+
+## Simulation Validation Scripts
+
+The conditioned reconstructed validation scripts under `scripts/validation/`
+are manually runnable checks, not part of the default test suite. Their Monte
+Carlo summaries simulate histories to `t_k`, keep only replicates satisfying
+`A_at(log, t_i, t_k) == 1`, and compare the retained empirical distribution to
+the conditioned analytical probabilities.
+
+Those scripts default to `apply_ρ₀ = false` because the analytical
+probabilities are for sampling over the simulated interval `(t_i, t_k]`, not an
+additional terminal present-day sampling pass at `t_k`.
