@@ -2941,6 +2941,65 @@ const PGF_T_PAIRS = ((0.1, 0.6), (0.3, 1.4), (0.8, 2.2))
         counts = [1, 0, 2]
         tl = 1.8
 
+        function brute_grouped_likelihood(
+            t0,
+            sampling_times,
+            sample_counts,
+            pars;
+            tℓ=last(sampling_times),
+            labelled_samples=false,
+            terminal_condition=:terminated,
+        )
+            remaining = reverse(cumsum(reverse(sample_counts)))
+
+            f = Dict{Int,Float64}(1 => 1.0)
+            u = t0
+
+            for i in eachindex(sampling_times)
+                ti = sampling_times[i]
+                c = sample_counts[i]
+                before_max = remaining[i]
+                after_max = i == length(sampling_times) ? 0 : remaining[i + 1]
+
+                g = Dict{Int,Float64}()
+
+                for (a, mass) in f
+                    a < 1 && continue
+                    for b in a:before_max
+                        k = BDUtils._no_sample_reconstructed_kernel(
+                            u, ti, tℓ, a, b, pars
+                        )
+                        g[b] = get(g, b, 0.0) + mass * k
+                    end
+                end
+
+                ψ̃ = transformed_sampling_rate(ti, tℓ, pars)
+                f_new = Dict{Int,Float64}()
+
+                for (b, mass) in g
+                    d = b - c
+                    0 <= d <= after_max || continue
+
+                    jump = BDUtils._grouped_removal_sampling_jump(
+                        b, c, ψ̃; labelled_samples=labelled_samples
+                    )
+
+                    f_new[d] = get(f_new, d, 0.0) + mass * jump
+                end
+
+                f = f_new
+                u = ti
+            end
+
+            if terminal_condition == :terminated
+                return get(f, 0, 0.0)
+            elseif terminal_condition == :any
+                return sum(values(f))
+            else
+                throw(ArgumentError("unsupported terminal_condition"))
+            end
+        end
+
         @test_throws ArgumentError grouped_sampling_time_likelihood(t0, [0.4, 0.9], [1], removal_pars; tℓ=tl)
         @test_throws ArgumentError grouped_sampling_time_likelihood(t0, Float64[], Int[], removal_pars)
         @test_throws ArgumentError grouped_sampling_time_likelihood(t0, [0.9, 0.4], [1, 1], removal_pars; tℓ=tl)
@@ -2970,6 +3029,46 @@ const PGF_T_PAIRS = ((0.1, 0.6), (0.3, 1.4), (0.8, 2.2))
         @test grouped_sampling_time_likelihood(t0, [t1], [c], removal_pars; tℓ=explicit_tl) ≈ expected_unlabelled
         @test grouped_sampling_time_likelihood(t0, [t1], [c], removal_pars; tℓ=explicit_tl, labelled_samples=true) ≈ expected_labelled
 
+        ratio_times = [0.4, 0.9, 1.3]
+        ratio_counts = [2, 1, 3]
+        ratio_tl = 1.8
+        unlabelled = grouped_sampling_time_likelihood(
+            t0, ratio_times, ratio_counts, removal_pars; tℓ=ratio_tl
+        )
+        labelled = grouped_sampling_time_likelihood(
+            t0, ratio_times, ratio_counts, removal_pars;
+            tℓ=ratio_tl,
+            labelled_samples=true,
+        )
+        @test labelled ≈ unlabelled * prod(factorial, ratio_counts)
+
+        small_times = [0.5, 1.1]
+        small_counts = [1, 2]
+        small_tl = 1.4
+        @test grouped_sampling_time_likelihood(
+            t0, small_times, small_counts, removal_pars; tℓ=small_tl
+        ) ≈ brute_grouped_likelihood(
+            t0, small_times, small_counts, removal_pars; tℓ=small_tl
+        )
+        @test grouped_sampling_time_likelihood(
+            t0, small_times, small_counts, removal_pars;
+            tℓ=small_tl,
+            labelled_samples=true,
+        ) ≈ brute_grouped_likelihood(
+            t0, small_times, small_counts, removal_pars;
+            tℓ=small_tl,
+            labelled_samples=true,
+        )
+        @test grouped_sampling_time_likelihood(
+            t0, small_times, small_counts, removal_pars;
+            tℓ=small_tl,
+            terminal_condition=:any,
+        ) ≈ brute_grouped_likelihood(
+            t0, small_times, small_counts, removal_pars;
+            tℓ=small_tl,
+            terminal_condition=:any,
+        )
+
         b = 5
         ψ = 0.8
         @test BDUtils._grouped_removal_sampling_jump(b, 2, ψ) ≈ binomial(b, 2) * ψ^2
@@ -2984,7 +3083,7 @@ const PGF_T_PAIRS = ((0.1, 0.6), (0.3, 1.4), (0.8, 2.2))
         for i in eachindex(times)
             before_max = remaining[i]
             g = zeros(Float64, before_max + 1)
-            for a in 0:(length(f) - 1), b2 in a:before_max
+            for a in 1:(length(f) - 1), b2 in a:before_max
                 g[b2 + 1] += f[a + 1] *
                     BDUtils._no_sample_reconstructed_kernel(u, times[i], tl, a, b2, removal_pars)
             end
