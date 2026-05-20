@@ -785,6 +785,176 @@ function conditioned_reconstructed_count_pmf(a::Integer, tᵢ::Real, tⱼ::Real,
     return (1 - ξ) * (1 - η) * η^(a - 1)
 end
 
+function _falling_factorial(b::Integer, c::Integer)
+    _check_count("b", b)
+    _check_count("c", c)
+    c > b && return 0
+    out = 1
+    for k in 0:(c - 1)
+        out *= b - k
+    end
+    return out
+end
+
+function _no_sample_reconstructed_kernel(
+    ti::Real,
+    tj::Real,
+    tℓ::Real,
+    a::Integer,
+    b::Integer,
+    pars::ConstantRateBDParameters,
+)
+    _check_count("a", a)
+    _check_count("b", b)
+    b >= a >= 1 || return zero(promote_type(typeof(ti), typeof(tj), typeof(tℓ), typeof(pars.λ), Float64))
+    _, tiT, tjT, tlT, pT = _promote_reconstructed_inputs(0.0, ti, tj, tℓ, pars)
+    β = conditioned_reconstructed_beta_bd(zero(tiT), tiT, tjT, tlT, pT)
+    γ = conditioned_reconstructed_gamma_bd(zero(tiT), tiT, tjT, tlT, pT)
+    return binomial(b - 1, a - 1) * β^a * γ^(b - a)
+end
+
+function _grouped_removal_sampling_jump(
+    b::Integer,
+    c::Integer,
+    ψ̃::Real;
+    labelled_samples::Bool=false,
+)
+    _check_count("b", b)
+    _check_count("c", c)
+    c > b && return zero(promote_type(typeof(ψ̃), Float64))
+    coefficient = labelled_samples ? _falling_factorial(b, c) : binomial(b, c)
+    return coefficient * ψ̃^c
+end
+
+function _validate_grouped_sampling_inputs(
+    t0::Real,
+    sampling_times::AbstractVector{<:Real},
+    sample_counts::AbstractVector{<:Integer},
+    pars::ConstantRateBDParameters,
+    tℓ::Real,
+)
+    length(sampling_times) == length(sample_counts) ||
+        throw(ArgumentError("sampling_times and sample_counts must have equal length."))
+    !isempty(sampling_times) || throw(ArgumentError("sampling_times must be nonempty."))
+    all(isfinite, sampling_times) || throw(ArgumentError("sampling_times must be finite."))
+    for i in 2:length(sampling_times)
+        sampling_times[i - 1] < sampling_times[i] ||
+            throw(ArgumentError("sampling_times must be strictly increasing unique grouped times."))
+    end
+    for c in sample_counts
+        _check_count("sample count", c)
+    end
+    sum(sample_counts) >= 1 || throw(ArgumentError("sum(sample_counts) must be at least 1."))
+    t0 < first(sampling_times) || throw(ArgumentError("t0 must be less than first(sampling_times)."))
+    last(sampling_times) <= tℓ || throw(ArgumentError("last(sampling_times) must be <= tℓ."))
+    isapprox(pars.r, one(pars.r)) ||
+        throw(ArgumentError("grouped_sampling_time_likelihood currently supports removal sampling only; pars.r must be approximately 1."))
+    return nothing
+end
+
+function _grouped_sampling_time_filter(
+    t0::Real,
+    sampling_times::AbstractVector{<:Real},
+    sample_counts::AbstractVector{<:Integer},
+    pars::ConstantRateBDParameters;
+    tℓ::Union{Nothing,Real}=nothing,
+    labelled_samples::Bool=false,
+)
+    isempty(sampling_times) && throw(ArgumentError("sampling_times must be nonempty."))
+    tl = tℓ === nothing ? last(sampling_times) : tℓ
+    T = promote_type(typeof(t0), eltype(sampling_times), typeof(tl), typeof(pars.λ), Float64)
+    pT = ConstantRateBDParameters{T}(T(pars.λ), T(pars.μ), T(pars.ψ), T(pars.r), T(pars.ρ₀))
+    times = T.(sampling_times)
+    counts = Int.(sample_counts)
+    t0T = T(t0)
+    tlT = T(tl)
+
+    _validate_grouped_sampling_inputs(t0T, times, counts, pT, tlT)
+    tl_work = times[end] == tlT ? tlT + 16sqrt(eps(T)) * max(one(T), abs(tlT)) : tlT
+
+    remaining = zeros(Int, length(counts) + 1)
+    for i in length(counts):-1:1
+        remaining[i] = remaining[i + 1] + counts[i]
+    end
+
+    f = zeros(T, remaining[1] + 1)
+    f[2] = one(T)
+    u = t0T
+
+    for i in eachindex(times)
+        ti = times[i]
+        c = counts[i]
+        before_max = remaining[i]
+        g = zeros(T, before_max + 1)
+        @inbounds for a in 0:(length(f) - 1)
+            fa = f[a + 1]
+            iszero(fa) && continue
+            for b in a:before_max
+                g[b + 1] += fa * _no_sample_reconstructed_kernel(u, ti, tl_work, a, b, pT)
+            end
+        end
+
+        after_max = remaining[i + 1]
+        next = zeros(T, after_max + 1)
+        ψ̃ = transformed_sampling_rate(ti, tl_work, pT)
+        @inbounds for b in c:before_max
+            d = b - c
+            d <= after_max || continue
+            next[d + 1] += g[b + 1] *
+                _grouped_removal_sampling_jump(b, c, ψ̃; labelled_samples=labelled_samples)
+        end
+        f = next
+        u = ti
+    end
+    return f
+end
+
+"""
+    grouped_sampling_time_likelihood(t0, sampling_times, sample_counts, pars;
+        tℓ=nothing, labelled_samples=false, terminal_condition=:terminated)
+
+Compute an unnormalized marginal likelihood/density for unique grouped
+sampling times of the reconstructed process under removal sampling. The
+`sample_counts` vector gives the number of samples at each grouped time in
+`sampling_times`. The calculation marginalizes over unobserved reconstructed
+births using no-sample propagators and finite forward filtering over
+reconstructed lineage counts.
+
+By default `tℓ` is set to the final sampling time, so the supplied grouped
+sampling times are treated as the complete reconstructed sampling set over
+`(t0,tℓ]`, and `terminal_condition=:terminated` returns the mass with zero
+reconstructed lineages after the final grouped event; the terminal transformed
+sampling rate is evaluated by a right-limit when the final grouped time equals
+`tℓ`. Use
+`terminal_condition=:any` to sum over the final filtering state. Grouped counts
+are unlabelled by default, using `binomial(b,c)` in the sampling jump;
+`labelled_samples=true` switches this coefficient to the falling factorial
+`(b)_c`. Zero-count grouped times are allowed and are propagated harmlessly, but
+the total sample count must be at least one. Currently only `pars.r ≈ 1` is
+supported.
+"""
+function grouped_sampling_time_likelihood(
+    t0::Real,
+    sampling_times::AbstractVector{<:Real},
+    sample_counts::AbstractVector{<:Integer},
+    pars::ConstantRateBDParameters;
+    tℓ::Union{Nothing,Real}=nothing,
+    labelled_samples::Bool=false,
+    terminal_condition::Symbol=:terminated,
+)
+    f = _grouped_sampling_time_filter(
+        t0,
+        sampling_times,
+        sample_counts,
+        pars;
+        tℓ=tℓ,
+        labelled_samples=labelled_samples,
+    )
+    terminal_condition == :terminated && return f[1]
+    terminal_condition == :any && return sum(f)
+    throw(ArgumentError("unsupported terminal_condition=$terminal_condition; expected :terminated or :any."))
+end
+
 """
     reconstructed_pgf_series(smax, tᵢ, tⱼ, tₖ, pars)
 

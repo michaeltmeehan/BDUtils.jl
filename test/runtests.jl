@@ -2933,6 +2933,82 @@ const PGF_T_PAIRS = ((0.1, 0.6), (0.3, 1.4), (0.8, 2.2))
         @test_throws ArgumentError conditioned_reconstructed_sampling_tail(2, 1.0, 1.0, 1.0, reconstructed_pars)
     end
 
+    @testset "public API: grouped reconstructed sampling-time likelihood" begin
+        removal_pars = ConstantRateBDParameters(1.8, 0.5, 0.7, 1.0)
+        nonremoval_pars = ConstantRateBDParameters(1.8, 0.5, 0.7, 0.4)
+        t0 = 0.0
+        times = [0.4, 0.9, 1.3]
+        counts = [1, 0, 2]
+        tl = 1.8
+
+        @test_throws ArgumentError grouped_sampling_time_likelihood(t0, [0.4, 0.9], [1], removal_pars; tℓ=tl)
+        @test_throws ArgumentError grouped_sampling_time_likelihood(t0, Float64[], Int[], removal_pars)
+        @test_throws ArgumentError grouped_sampling_time_likelihood(t0, [0.9, 0.4], [1, 1], removal_pars; tℓ=tl)
+        @test_throws ArgumentError grouped_sampling_time_likelihood(t0, [0.4], [-1], removal_pars; tℓ=tl)
+        @test_throws ArgumentError grouped_sampling_time_likelihood(t0, [0.4], [0], removal_pars; tℓ=tl)
+        @test_throws ArgumentError grouped_sampling_time_likelihood(0.4, [0.4], [1], removal_pars; tℓ=tl)
+        @test_throws ArgumentError grouped_sampling_time_likelihood(t0, [0.4, 1.9], [1, 1], removal_pars; tℓ=tl)
+        @test_throws ArgumentError grouped_sampling_time_likelihood(t0, [0.4], [1], nonremoval_pars; tℓ=tl)
+        @test_throws ArgumentError grouped_sampling_time_likelihood(t0, [0.4], [1], removal_pars; tℓ=tl, terminal_condition=:unsupported)
+
+        @test grouped_sampling_time_likelihood(t0, times, counts, removal_pars) ≈
+            grouped_sampling_time_likelihood(t0, times, counts, removal_pars; tℓ=last(times))
+
+        t1 = 0.6
+        explicit_tl = 1.4
+        ψ̃ = transformed_sampling_rate(t1, explicit_tl, removal_pars)
+        @test grouped_sampling_time_likelihood(t0, [t1], [1], removal_pars; tℓ=explicit_tl) ≈
+            BDUtils._no_sample_reconstructed_kernel(t0, t1, explicit_tl, 1, 1, removal_pars) * ψ̃
+
+        c = 3
+        expected_unlabelled =
+            BDUtils._no_sample_reconstructed_kernel(t0, t1, explicit_tl, 1, c, removal_pars) *
+            binomial(c, c) * ψ̃^c
+        expected_labelled =
+            BDUtils._no_sample_reconstructed_kernel(t0, t1, explicit_tl, 1, c, removal_pars) *
+            BDUtils._falling_factorial(c, c) * ψ̃^c
+        @test grouped_sampling_time_likelihood(t0, [t1], [c], removal_pars; tℓ=explicit_tl) ≈ expected_unlabelled
+        @test grouped_sampling_time_likelihood(t0, [t1], [c], removal_pars; tℓ=explicit_tl, labelled_samples=true) ≈ expected_labelled
+
+        b = 5
+        ψ = 0.8
+        @test BDUtils._grouped_removal_sampling_jump(b, 2, ψ) ≈ binomial(b, 2) * ψ^2
+        @test BDUtils._grouped_removal_sampling_jump(b, 3, ψ; labelled_samples=true) ≈ BDUtils._falling_factorial(b, 3) * ψ^3
+        @test BDUtils._grouped_removal_sampling_jump(2, 3, ψ) == 0
+
+        state_lengths = Int[]
+        remaining = reverse(cumsum(reverse(counts)))
+        f = zeros(Float64, remaining[1] + 1)
+        f[2] = 1.0
+        u = t0
+        for i in eachindex(times)
+            before_max = remaining[i]
+            g = zeros(Float64, before_max + 1)
+            for a in 0:(length(f) - 1), b2 in a:before_max
+                g[b2 + 1] += f[a + 1] *
+                    BDUtils._no_sample_reconstructed_kernel(u, times[i], tl, a, b2, removal_pars)
+            end
+            after_max = i == length(times) ? 0 : remaining[i + 1]
+            next = zeros(Float64, after_max + 1)
+            ψi = transformed_sampling_rate(times[i], tl, removal_pars)
+            for b2 in counts[i]:before_max
+                d = b2 - counts[i]
+                d <= after_max || continue
+                next[d + 1] += g[b2 + 1] * BDUtils._grouped_removal_sampling_jump(b2, counts[i], ψi)
+            end
+            push!(state_lengths, length(next))
+            f = next
+            u = times[i]
+        end
+        @test state_lengths == [remaining[2] + 1, remaining[3] + 1, 1]
+        @test length(BDUtils._grouped_sampling_time_filter(t0, times, counts, removal_pars; tℓ=tl)) == 1
+
+        terminated = grouped_sampling_time_likelihood(t0, times, counts, removal_pars; tℓ=tl)
+        any_terminal = grouped_sampling_time_likelihood(t0, times, counts, removal_pars; tℓ=tl, terminal_condition=:any)
+        @test any_terminal ≈ sum(BDUtils._grouped_sampling_time_filter(t0, times, counts, removal_pars; tℓ=tl))
+        @test any_terminal >= terminated
+    end
+
     @testset "algebraic identities: conditioned reconstructed process" begin
         identity_pars = (
             ConstantRateBDParameters(1.4, 0.6, 0.7, 1.0),
