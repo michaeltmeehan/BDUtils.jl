@@ -52,8 +52,11 @@ function backward_generator(y, w, pars)
 end
 
 function p_unsampled(tj, tk, pars)
+    z = 1 - pars.ρ₀
+    α0 = alpha_bd(0.0, tj, tk, pars)
+    β0 = beta_bd(0.0, tj, tk, pars)
     γ0 = gamma_bd(0.0, tj, tk, pars)
-    return 1 - pars.ψ / pars.λ * γ0 / (1 - γ0)
+    return α0 + β0 * z / (1 - γ0 * z)
 end
 
 function transformed_rates(tj, tk, pars)
@@ -160,9 +163,9 @@ function original_process_validation_summary(seed, pars, tj, nsims; tail_atol=2e
     )
 end
 
-function reconstructed_validation_summary(seed, pars, tj, tk, nsims; tail_atol=2e-4, max_smax=1_000)
+function reconstructed_validation_summary(seed, pars, tj, tk, nsims; tail_atol=2e-4, max_smax=1_000, apply_ρ₀=false)
     rng = MersenneTwister(seed)
-    logs = [simulate_bd(rng, pars, tk; apply_ρ₀=false) for _ in 1:nsims]
+    logs = [simulate_bd(rng, pars, tk; apply_ρ₀=apply_ρ₀) for _ in 1:nsims]
 
     amax = reconstructed_count_truncation(0.0, tj, tk, pars; atol=tail_atol)
     smax = reconstructed_sampling_truncation(0.0, tj, tk, pars; atol=tail_atol, max_smax=max_smax)
@@ -2409,6 +2412,22 @@ const PGF_T_PAIRS = ((0.1, 0.6), (0.3, 1.4), (0.8, 2.2))
                 retention_atol=0.025,
             )
         end
+
+        terminal_cases = (
+            (name="subcritical_terminal_sampling", seed=44, pars=ConstantRateBDParameters(0.8, 1.0, 0.3, 0.4, 0.35), tj=0.5, tk=1.25, nsims=10_000),
+            (name="supercritical_terminal_sampling", seed=45, pars=ConstantRateBDParameters(1.35, 0.55, 0.65, 0.7, 0.25), tj=0.45, tk=1.15, nsims=10_000),
+        )
+
+        for case in terminal_cases
+            summary = reconstructed_validation_summary(case.seed, case.pars, case.tj, case.tk, case.nsims; tail_atol=1e-4, apply_ρ₀=true)
+            assert_reconstructed_validation(summary;
+                joint_tv_atol=0.035,
+                marginal_tv_atol=0.03,
+                maxerr_atol=0.025,
+                tail_slack=0.025,
+                retention_atol=0.03,
+            )
+        end
     end
 
     @testset "simulation validation: reconstructed multi-time queries" begin
@@ -2708,7 +2727,7 @@ const PGF_T_PAIRS = ((0.1, 0.6), (0.3, 1.4), (0.8, 2.2))
             end
         end
 
-        @test unsampled_probability(1.0, 1.0, pars) ≈ 1.0
+        @test unsampled_probability(1.0, 1.0, pars) ≈ 1 - pars.ρ₀
         @test_throws ArgumentError unsampled_probability(2.0, 1.0, pars)
         @test_throws ArgumentError reconstructed_alpha_bd(1.0, 1.1, 1.0, 2.0, pars)
         @test_throws ArgumentError reconstructed_count_pmf(-1, 0.0, 1.0, 2.0, pars)
@@ -2750,7 +2769,7 @@ const PGF_T_PAIRS = ((0.1, 0.6), (0.3, 1.4), (0.8, 2.2))
 
         @test_throws ArgumentError conditioned_reconstructed_alpha_bd(1.0, 1.1, 1.0, 2.0, pars)
         @test_throws ArgumentError conditioned_reconstructed_count_pmf(-1, 0.0, 1.0, 2.0, pars)
-        @test_throws ArgumentError conditioned_reconstructed_alpha_bd(1.0, 1.0, 1.0, 1.0, pars)
+        @test_throws ArgumentError conditioned_reconstructed_alpha_bd(1.0, 1.0, 1.0, 1.0, ConstantRateBDParameters(λ, μ, ψ, r))
     end
 
     @testset "public API: reconstructed series, PMF, marginals, and truncation" begin
@@ -3227,43 +3246,46 @@ const PGF_T_PAIRS = ((0.1, 0.6), (0.3, 1.4), (0.8, 2.2))
     end
 
     @testset "extinction and survival helpers" begin
-        @test E_constant(0.0, λ, μ, ψ) == 1.0
-        @test E_constant(0.0, λ, μ, ψ; ρ₀=0.25) == 0.75
+        λ0, μ0, ψ0, r0 = pars.λ, pars.μ, pars.ψ, pars.r
+
+        @test E_constant(0.0, λ0, μ0, ψ0) == 1.0
+        @test E_constant(0.0, λ0, μ0, ψ0; ρ₀=pars.ρ₀) == 1 - pars.ρ₀
         @test E_constant(0.0, pars) == 0.75
-        @test g_constant(0.0, λ, μ, ψ) == 0.0
+        @test g_constant(0.0, λ0, μ0, ψ0) == 0.0
         @test g_constant(0.0, pars) == 0.0
 
-        E1 = E_constant(1.0, λ, μ, ψ)
-        g1 = g_constant(1.0, λ, μ, ψ)
-        @test E_constant(1.0, pars) ≈ E_constant(1.0, λ, μ, ψ; ρ₀=0.25)
-        @test g_constant(1.0, pars) ≈ g_constant(1.0, λ, μ, ψ; ρ₀=0.25)
+        E1 = E_constant(1.0, λ0, μ0, ψ0)
+        g1 = g_constant(1.0, λ0, μ0, ψ0)
+        @test E_constant(1.0, pars) ≈ E_constant(1.0, λ0, μ0, ψ0; ρ₀=pars.ρ₀)
+        @test g_constant(1.0, pars) ≈ g_constant(1.0, λ0, μ0, ψ0; ρ₀=pars.ρ₀)
         @test isfinite(E1)
         @test isfinite(g1)
         @test 0.0 <= E1 <= 1.0
         @test logaddexp(log(0.25), log(0.75)) ≈ 0.0 atol=eps(Float64)
 
-        @test_throws ArgumentError E_constant(1.0, 0.0, μ, ψ)
-        @test_throws ArgumentError E_constant(1.0, λ, μ, ψ; ρ₀=-0.1)
-        @test_throws ArgumentError g_constant(NaN, λ, μ, ψ)
+        @test_throws ArgumentError E_constant(1.0, 0.0, μ0, ψ0)
+        @test_throws ArgumentError E_constant(1.0, λ0, μ0, ψ0; ρ₀=-0.1)
+        @test_throws ArgumentError g_constant(NaN, λ0, μ0, ψ0)
     end
 
     @testset "TreeSim likelihood benchmark and admissibility" begin
+        λ0, μ0, ψ0, r0 = pars.λ, pars.μ, pars.ψ, pars.r
         tree = tiny_tree()
         @test validate_tree(tree; require_single_root=true, require_reachable=true)
 
-        ll = bd_loglikelihood_constant(tree, λ, μ, ψ, r)
+        ll = bd_loglikelihood_constant(tree, λ0, μ0, ψ0, r0)
         @test isfinite(ll)
         @test ll ≈ -1.6722221934689507
-        @test bd_loglikelihood_constant(tree, ConstantRateBDParameters(λ, μ, ψ, r)) ≈ ll
-        @test bd_loglikelihood_constant(tree, pars) ≈ bd_loglikelihood_constant(tree, λ, μ, ψ, r; ρ₀=0.25)
+        @test bd_loglikelihood_constant(tree, ConstantRateBDParameters(λ0, μ0, ψ0, r0)) ≈ ll
+        @test bd_loglikelihood_constant(tree, pars) ≈ bd_loglikelihood_constant(tree, λ0, μ0, ψ0, r0; ρ₀=pars.ρ₀)
 
         ll_ascii = bd_loglikelihood_constant(tree, 2, 0.5, 0.4, 0.7)
         @test ll_ascii ≈ ll
 
-        @test_throws ArgumentError bd_loglikelihood_constant(tree, 0.0, μ, ψ, r)
-        @test_throws ArgumentError bd_loglikelihood_constant(tree, λ, μ, 0.0, r)
-        @test_throws ArgumentError bd_loglikelihood_constant(tree, λ, μ, ψ, -0.01)
-        @test_throws ArgumentError bd_loglikelihood_constant(tree, λ, μ, ψ, r; ρ₀=1.01)
+        @test_throws ArgumentError bd_loglikelihood_constant(tree, 0.0, μ0, ψ0, r0)
+        @test_throws ArgumentError bd_loglikelihood_constant(tree, λ0, μ0, 0.0, r0)
+        @test_throws ArgumentError bd_loglikelihood_constant(tree, λ0, μ0, ψ0, -0.01)
+        @test_throws ArgumentError bd_loglikelihood_constant(tree, λ0, μ0, ψ0, r0; ρ₀=1.01)
 
         analytically_invalid = unsampled_unary_tree()
         @test validate_tree(analytically_invalid; require_single_root=true, require_reachable=true)

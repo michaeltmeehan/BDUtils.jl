@@ -476,12 +476,16 @@ end
     unsampled_probability(tⱼ, tₖ, pars)
 
 Probability that one lineage extant at `tⱼ` is not sampled in `(tⱼ, tₖ]`
-under the constant-rate generalized birth-death-sampling process.
+under the constant-rate generalized birth-death-sampling process, including
+terminal sampling at `tₖ` with probability `ρ₀`.
 """
 function unsampled_probability(tⱼ::T, tₖ::T, pars::ConstantRateBDParameters{T}) where {T<:AbstractFloat}
     tⱼ <= tₖ || throw(ArgumentError("times must satisfy tⱼ <= tₖ."))
+    z = one(T) - pars.ρ₀
+    α0 = alpha_bd(zero(T), tⱼ, tₖ, pars)
+    β0 = beta_bd(zero(T), tⱼ, tₖ, pars)
     γ0 = gamma_bd(zero(T), tⱼ, tₖ, pars)
-    return one(T) - pars.ψ / pars.λ * γ0 / (one(T) - γ0)
+    return α0 + β0 * z / (one(T) - γ0 * z)
 end
 
 function unsampled_probability(tⱼ::Real, tₖ::Real, pars::ConstantRateBDParameters)
