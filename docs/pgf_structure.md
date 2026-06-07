@@ -34,6 +34,15 @@ files `test_pgf_primitives.jl`, `test_original_process_probabilities.jl`,
 latent-count, and simulation-backed checks for terminal sampling-time
 likelihoods separate from the conditioned kernel tests.
 
+For manual research/development validation, run
+`julia --project=. scripts/validation/sampling_time_likelihood_validation.jl`.
+That script compares `sampling_time_likelihood` with an independent
+latent-count brute-force calculation for one and two grouped serial sampling
+times, fixed-seed `simulate_bd` Monte Carlo estimates, Monte Carlo standard
+errors and approximate confidence intervals, and `diagnostics=true` summaries.
+Increase the simulation budget with
+`BDUTILS_SAMPLING_TIME_VALIDATION_NSIMS=<n>`.
+
 ## Sampling-time likelihood API notes
 
 `sampling_time_likelihood` is the intended public entry point for the new
