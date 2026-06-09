@@ -117,6 +117,69 @@ For probabilities of the form `P(A_j^k = a | A_i^k = 1)`,
 `conditioned_reconstructed_count_pmf(a, t_i, t_j, t_k, pars)` is the preferred
 entry point.
 
+## Rounded Or Binned Sampling Times
+
+Rounded sampling dates should be treated as interval-censored observations, not
+as exact point-time samples. If a sample is recorded as occurring in year `y`,
+the observation is better interpreted as the event that the true continuous
+sampling time fell inside the corresponding year bin, rather than as evidence
+that the sample occurred exactly at the midpoint of the year.
+
+The binned likelihood is an analytical correction for rounded sampling times. It
+replaces exact point-time sampling factors with interval-count probabilities
+computed from the `w`-marked reconstructed-process PGF, thereby summing over all
+possible continuous sampling times inside each bin. For a bin from `t_i` to
+`t_j`, define
+
+```text
+Q_{ij}^ell(a_j, m | a_i)
+  = [z^a_j w^m] { R_{ij}^ell(z, w) }^a_i
+```
+
+where `a_i` is the reconstructed lineage count at the start of the bin, `a_j`
+is the reconstructed lineage count at the end of the bin, `m` is the observed
+number of serial samples in the bin, and `w` marks serial sampling events. The
+forward filter over bin edges is
+
+```text
+f_j(a_j) =
+    sum_{a_i} f_i(a_i) Q_{ij}^ell(a_j, m_{ij} | a_i)
+```
+
+where `m_{ij}` is the observed count in that bin.
+
+The manual validation in
+`scripts/validation/binned_sampling_time_likelihood_validation.jl` uses the
+conditioned reconstructed process with `A(first_edge, t_ell) = 1`; the Monte
+Carlo estimator is conditioned on the same event. It uses the endpoint
+convention `(left, right]`, matching the PGF interval convention.
+
+If the final bin edge is before `t_ell`, the validation distinguishes two final
+interval conventions:
+
+- `final_interval = :marginalized`: samples after the final bin edge are not
+  part of the observation.
+- `final_interval = :censored`: no additional samples are allowed after the
+  final bin edge and before `t_ell`.
+
+The current validation covers full-removal serial sampling (`r = 1.0`) and
+partial-removal serial sampling (`r = 0.5`) with terminal sampling disabled
+(`rho = 0.0`). For partial removal, the simulator records sampled-and-removed
+events as `SerialSampling` and sampled-but-not-removed events as
+`FossilizedSampling`; both are counted as serial sampling events in the binned
+sample counts. Terminal sampling with `rho > 0` has not yet been validated in
+this binned likelihood script.
+
+Run the validation from the package root with:
+
+```bash
+julia --project=. scripts/validation/binned_sampling_time_likelihood_validation.jl
+```
+
+Optional environment variables are
+`BDUTILS_BINNED_VALIDATION_NSIMS`, `BDUTILS_BINNED_VALIDATION_SEED`,
+`BDUTILS_BINNED_VALIDATION_ATOL`, and `BDUTILS_BINNED_VALIDATION_MAX_A`.
+
 ## Reconstructed Tree Statistics
 
 The package also includes analytical summaries for reconstructed trees:
@@ -176,8 +239,8 @@ on `A_i^k = 1`.
 The conditioned reconstructed validation scripts under `scripts/validation/`
 are manually runnable checks, not part of the default test suite. Their Monte
 Carlo summaries simulate histories to `t_k`, keep only replicates satisfying
-`A_at(log, t_i, t_k) == 1`, and compare the retained empirical distribution to
-the conditioned analytical probabilities.
+the documented conditioning event, and compare the retained empirical
+distribution to the conditioned analytical probabilities.
 
 Those scripts default to `apply_ρ₀ = false` because the analytical
 probabilities are for sampling over the simulated interval `(t_i, t_k]`, not an
