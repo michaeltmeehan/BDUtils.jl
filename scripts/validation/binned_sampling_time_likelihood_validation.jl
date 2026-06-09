@@ -14,10 +14,14 @@ using BDUtils
 # Bin counts are interval-censored serial sampling observations. A bin
 # [edges[i], edges[i+1]] is interpreted as the half-open-in-reverse interval
 # `(edges[i], edges[i+1]]`, matching the package's no-sampling interval
-# convention. By default bins cover the complete observation horizon, so there
-# is no final interval to constrain. If `t_ell` extends beyond the last bin,
-# `final_interval=:marginalized` treats later samples as unobserved; use
-# `final_interval=:censored` to require no later samples.
+# convention. For partial-removal sampling (`0 < r < 1`), simulate_bd records
+# sampled-and-removed lineages as `SerialSampling` and sampled-but-not-removed
+# lineages as `FossilizedSampling`; both are serial sampling events for the
+# interval-count likelihood and both are counted in bins. By default bins cover
+# the complete observation horizon, so there is no final interval to constrain.
+# If `t_ell` extends beyond the last bin, `final_interval=:marginalized` treats
+# later samples as unobserved; use `final_interval=:censored` to require no
+# later samples.
 #
 # Increase the simulation budget with, for example:
 #   BDUTILS_BINNED_VALIDATION_NSIMS=100000 julia --project=. scripts/validation/binned_sampling_time_likelihood_validation.jl
@@ -44,8 +48,8 @@ function validate_binned_inputs(bin_edges, counts, pars, tℓ, max_a)
     first(bin_edges) < tℓ || throw(ArgumentError("first(bin_edges) must be less than tℓ."))
     last(bin_edges) <= tℓ || throw(ArgumentError("last(bin_edges) must be <= tℓ."))
     max_a >= 1 || throw(ArgumentError("max_a must be positive."))
-    isapprox(pars.r, one(pars.r)) ||
-        throw(ArgumentError("binned validation currently supports removal sampling only; pars.r must be approximately 1."))
+    iszero(pars.ρ₀) ||
+        throw(ArgumentError("binned validation keeps terminal sampling disabled; pars.ρ₀ must be 0."))
     return nothing
 end
 
@@ -176,7 +180,11 @@ end
 function bin_counts_from_log(log, edges)
     counts = zeros(Int, length(edges) - 1)
     for i in eachindex(log.time)
-        log.kind[i] == SerialSampling || continue
+        # Under partial removal, non-removing serial samples remain active in
+        # the simulator and are logged as FossilizedSampling. The PGF's w marker
+        # counts all serial sampling events, so both simulator event kinds enter
+        # the binned count observation.
+        log.kind[i] in (SerialSampling, FossilizedSampling) || continue
         b = bin_index(log.time[i], edges)
         b === nothing || (counts[b] += 1)
     end
@@ -227,47 +235,70 @@ function analytical_for_case(case; max_a=MAX_A, diagnostics=false)
 end
 
 function deterministic_cross_checks(pars)
-    checks = Tuple{String,Bool,Float64,Float64}[]
+    checks = Tuple{String,String,Bool,Float64,Float64}[]
+    rlabel = @sprintf("r=%.1f", pars.r)
 
     merged = binned_sampling_time_likelihood([0.0, 1.0], [2], pars; max_amax=MAX_A)
     allocated = sum(
         binned_sampling_time_likelihood([0.0, 0.5, 1.0], [k, 2 - k], pars; max_amax=MAX_A)
         for k in 0:2
     )
-    push!(checks, ("merge allocation", isapprox(merged, allocated; atol=2ATOL, rtol=5e-3), merged, allocated))
+    push!(checks, (rlabel, "merge allocation", isapprox(merged, allocated; atol=2ATOL, rtol=5e-3), merged, allocated))
 
     no_sample_transition = binned_sampling_time_likelihood([0.0, 0.4], [0], pars; tℓ=1.0, max_amax=MAX_A)
     no_sample_kernel = no_sample_probability_conditioned(0.0, 0.4, 1.0, pars)
-    push!(checks, ("zero-sample bin", isapprox(no_sample_transition, no_sample_kernel; atol=1e-8, rtol=1e-8),
+    push!(checks, (rlabel, "zero-sample bin", isapprox(no_sample_transition, no_sample_kernel; atol=1e-8, rtol=1e-8),
                   no_sample_transition, no_sample_kernel))
 
-    narrow_edges = [0.0, 0.49, 0.51, 1.0]
-    narrow_binned = binned_sampling_time_likelihood(narrow_edges, [0, 1, 0], pars; max_amax=MAX_A)
-    exact_density = sampling_time_likelihood(0.0, [0.5], [1], 0, pars;
-        tℓ=1.0,
-        terminal_sampling=false,
-        terminal_condition=:censored,
-    )
-    narrow_approx = exact_density * (narrow_edges[3] - narrow_edges[2])
-    push!(checks, ("narrow-bin diagnostic", isapprox(narrow_binned, narrow_approx; atol=0.02, rtol=0.25),
-                  narrow_binned, narrow_approx))
+    diagnostic = binned_sampling_time_likelihood([0.0, 0.5, 1.0], [1, 0], pars; max_amax=MAX_A, diagnostics=true)
+    finite_nonnegative = isfinite(diagnostic.likelihood) && diagnostic.likelihood >= 0.0
+    push!(checks, (rlabel, "finite nonnegative", finite_nonnegative, diagnostic.likelihood, 0.0))
+    tail_ok = diagnostic.max_count_tail_mass <= ATOL
+    push!(checks, (rlabel, "truncation tail", tail_ok, diagnostic.max_count_tail_mass, ATOL))
+
+    if isapprox(pars.r, one(pars.r))
+        narrow_edges = [0.0, 0.49, 0.51, 1.0]
+        narrow_binned = binned_sampling_time_likelihood(narrow_edges, [0, 1, 0], pars; max_amax=MAX_A)
+        exact_density = sampling_time_likelihood(0.0, [0.5], [1], 0, pars;
+            tℓ=1.0,
+            terminal_sampling=false,
+            terminal_condition=:censored,
+        )
+        narrow_approx = exact_density * (narrow_edges[3] - narrow_edges[2])
+        push!(checks, (rlabel, "narrow-bin diagnostic", isapprox(narrow_binned, narrow_approx; atol=0.02, rtol=0.25),
+                      narrow_binned, narrow_approx))
+    else
+        # The exact grouped-time density helper is still removal-only, so for
+        # partial removal this remains a finite/positive binned diagnostic.
+        narrow_edges = [0.0, 0.49, 0.51, 1.0]
+        narrow_binned = binned_sampling_time_likelihood(narrow_edges, [0, 1, 0], pars; max_amax=MAX_A)
+        push!(checks, (rlabel, "narrow-bin diagnostic", isfinite(narrow_binned) && narrow_binned >= 0.0,
+                      narrow_binned, 0.0))
+    end
 
     return checks
 end
 
 function validation_cases()
-    pars = ConstantRateBDParameters(1.2, 0.4, 0.5, 1.0, 0.0)
+    removal_pars = ConstantRateBDParameters(1.2, 0.4, 0.5, 1.0, 0.0)
+    partial_pars = ConstantRateBDParameters(1.2, 0.4, 0.5, 0.5, 0.0)
     return [
         (name="one non-empty bin", bin_edges=[0.0, 0.5, 1.0], target_counts=[1, 0],
-         pars=pars, seed=SEED + 1),
+         pars=removal_pars, seed=SEED + 1),
         (name="two non-empty bins", bin_edges=[0.0, 0.5, 1.0, 1.5], target_counts=[1, 0, 1],
-         pars=pars, seed=SEED + 2),
+         pars=removal_pars, seed=SEED + 2),
         (name="multiple samples in one bin", bin_edges=[0.0, 0.5, 1.0, 1.5], target_counts=[0, 2, 0],
-         pars=pars, seed=SEED + 3),
+         pars=removal_pars, seed=SEED + 3),
         (name="empty interior bin", bin_edges=[0.0, 0.4, 0.8, 1.2], target_counts=[1, 0, 1],
-         pars=pars, seed=SEED + 4),
+         pars=removal_pars, seed=SEED + 4),
         (name="integer-like bins", bin_edges=[-0.5, 0.5, 1.5, 2.5], target_counts=[1, 1, 0],
-         pars=pars, seed=SEED + 5),
+         pars=removal_pars, seed=SEED + 5),
+        (name="partial removal: one non-empty bin", bin_edges=[0.0, 0.5, 1.0], target_counts=[1, 0],
+         pars=partial_pars, seed=SEED + 6),
+        (name="partial removal: multiple in one bin", bin_edges=[0.0, 0.5, 1.0, 1.5], target_counts=[0, 2, 0],
+         pars=partial_pars, seed=SEED + 7),
+        (name="partial removal: interior empty bin", bin_edges=[0.0, 0.4, 0.8, 1.2], target_counts=[1, 0, 1],
+         pars=partial_pars, seed=SEED + 8),
     ]
 end
 
@@ -290,16 +321,17 @@ function print_results(results, checks)
     println("------------------------------------------")
     @printf("nsims=%d  seed=%d  atol=%.4g  max_a=%d\n", NSIMS, SEED, ATOL, MAX_A)
     println("Monte Carlo estimates are conditional on A(first_edge, t_ell) = 1; rho0 = 0.")
+    println("For r < 1, simulator SerialSampling and FossilizedSampling events are both counted as serial samples.")
     println("Simulation and PGF bins use `(left, right]` endpoints; later samples are marginalized when last_edge < t_ell unless final_interval=:censored is requested.")
     println()
-    println("case                         likelihood    mc_est      mc_se       95% CI                  matches/nsims  count_tail  status")
-    println("---------------------------  ------------  ----------  ----------  ----------------------  ------------  ----------  ------")
+    println("case                                      likelihood    mc_est      mc_se       95% CI                  matches/conditioned  count_tail  status")
+    println("----------------------------------------  ------------  ----------  ----------  ----------------------  -------------------  ----------  ------")
     for row in results
         mc = row.mc
         ci = @sprintf("[%.5g, %.5g]", mc.ci_low, mc.ci_high)
         matches = @sprintf("%d/%d", mc.hits, mc.conditioned)
         @printf(
-            "%-27s  %12s  %10s  %10s  %-22s  %-12s  %10s  %s\n",
+            "%-40s  %12s  %10s  %10s  %-22s  %-19s  %10s  %s\n",
             row.name,
             fmt(row.likelihood),
             fmt(mc.estimate),
@@ -313,17 +345,21 @@ function print_results(results, checks)
 
     println()
     println("deterministic cross-checks")
-    println("check                  lhs          rhs          status")
-    println("---------------------  -----------  -----------  ------")
-    for (name, ok, lhs, rhs) in checks
-        @printf("%-21s  %11s  %11s  %s\n", name, fmt(lhs), fmt(rhs), ok ? "ok" : "check")
+    println("pars   check                  lhs          rhs          status")
+    println("-----  ---------------------  -----------  -----------  ------")
+    for (rlabel, name, ok, lhs, rhs) in checks
+        @printf("%-5s  %-21s  %11s  %11s  %s\n", rlabel, name, fmt(lhs), fmt(rhs), ok ? "ok" : "check")
     end
 end
 
-results = run_case.(validation_cases())
-checks = deterministic_cross_checks(first(validation_cases()).pars)
+cases = validation_cases()
+results = run_case.(cases)
+checks = vcat(
+    deterministic_cross_checks(ConstantRateBDParameters(1.2, 0.4, 0.5, 1.0, 0.0)),
+    deterministic_cross_checks(ConstantRateBDParameters(1.2, 0.4, 0.5, 0.5, 0.0)),
+)
 print_results(results, checks)
 
-if any(row.status != "ok" for row in results) || any(!check[2] for check in checks[1:2])
+if any(row.status != "ok" for row in results) || any(!check[3] for check in checks)
     exit(1)
 end
