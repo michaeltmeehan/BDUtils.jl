@@ -168,6 +168,37 @@
         ) ≈ 1.0
     end
 
+    @testset "terminal endpoint identities" begin
+        pars = ConstantRateBDParameters(1.2, 0.4, 0.5, 1.0, 0.5)
+        no_rho_pars = ConstantRateBDParameters(1.2, 0.4, 0.5, 1.0, 0.0)
+        t0, s, tl = 0.0, 0.75, 1.5
+
+        terminal_cap = conditioned_reconstructed_count_truncation(t0, tl, tl, pars; atol=1e-12)
+        terminal_sum = sum(
+            sampling_time_likelihood(t0, Float64[], Int[], m, pars; tℓ=tl)
+            for m in 0:terminal_cap
+        )
+        terminal_tail = conditioned_reconstructed_count_tail(terminal_cap, t0, tl, tl, pars)
+        @test terminal_sum + terminal_tail ≈ 1.0 rtol=1e-10 atol=2e-12
+
+        @test sampling_time_likelihood(t0, Float64[], Int[], 0, no_rho_pars; tℓ=tl) ≈ 1.0
+        @test sampling_time_likelihood(t0, Float64[], Int[], 1, no_rho_pars; tℓ=tl) ≈ 0.0 atol=1e-12
+
+        endpoint_values = [
+            sampling_time_likelihood(t0, [s], [1], m, pars; tℓ=tl)
+            for m in 0:5
+        ]
+        @test all(isfinite, endpoint_values)
+        @test all(x -> x >= 0.0, endpoint_values)
+        @test all(x -> x <= 1.0, endpoint_values)
+
+        grouped = sampling_time_likelihood(t0, [s], [2], 1, pars; tℓ=tl)
+        @test isfinite(grouped)
+        @test 0.0 <= grouped <= 1.0
+
+        @test_throws ArgumentError sampling_time_likelihood(t0, Float64[], Int[], -1, pars; tℓ=tl)
+    end
+
     @testset "diagnostics" begin
         pars = ConstantRateBDParameters(1.25, 0.25, 0.5, 1.0, 0.35)
         t0, tl = 0.0, 1.1

@@ -9,7 +9,9 @@ using BDUtils
 # reconstructed lineage at the first bin edge, `A(first_edge, t_ell) = 1`, and
 # estimates Monte Carlo probabilities as hits among only those conditioned
 # simulations. It uses rho0 = 0 so every observed sample is a serial sample
-# inside a bin, not a terminal atom.
+# inside a bin, not a terminal atom. Terminal sampling is deliberately left out
+# here because a final bin can ambiguously contain both serial samples inside
+# the interval and Bernoulli terminal samples exactly at t_ell.
 #
 # Bin counts are interval-censored serial sampling observations. A bin
 # [edges[i], edges[i+1]] is interpreted as the half-open-in-reverse interval

@@ -114,7 +114,7 @@ function outside_serial_count(log, t0, tl, times, half_width)
 end
 
 function monte_carlo_window_density(case; nsims=NSIMS, half_width=HALF_WIDTH)
-    any(iszero, case.counts) && return nothing
+    any(!=(1), case.counts) && return nothing
     case.pars.r == 1.0 || return nothing
 
     rng = MersenneTwister(case.seed)
@@ -220,9 +220,16 @@ function run_case(case)
 end
 
 function validation_cases()
+    suggested = ConstantRateBDParameters(1.2, 0.4, 0.5, 1.0, 0.5)
     base = ConstantRateBDParameters(0.8, 0.25, 0.45, 1.0, 0.7)
     terminal_base = ConstantRateBDParameters(1.1, 0.35, 0.35, 1.0, 0.55)
     return [
+        (name="terminal only", pars=suggested, t0=0.0, times=Float64[], counts=Int[],
+         terminal_count=1, tl=1.5, max_count=nothing, brute=false, seed=SEED + 11),
+        (name="serial+terminal", pars=suggested, t0=0.0, times=[0.75], counts=[1],
+         terminal_count=1, tl=1.5, max_count=8, brute=true, seed=SEED + 12),
+        (name="grouped+terminal", pars=suggested, t0=0.0, times=[0.75], counts=[2],
+         terminal_count=1, tl=1.5, max_count=8, brute=true, seed=SEED + 13),
         (name="one serial", pars=base, t0=0.0, times=[0.55], counts=[1], terminal_count=1,
          tl=1.0, max_count=9, brute=true, seed=SEED + 1),
         (name="two serial", pars=ConstantRateBDParameters(1.25, 0.25, 0.5, 1.0, 0.35),
@@ -248,9 +255,55 @@ function validation_cases()
     ]
 end
 
+function deterministic_checks()
+    checks = Tuple{String,Bool,Float64,Float64}[]
+
+    pars = ConstantRateBDParameters(1.2, 0.4, 0.5, 1.0, 0.5)
+    t0, tl = 0.0, 1.5
+    terminal_cap = conditioned_reconstructed_count_truncation(t0, tl, tl, pars; atol=1e-12)
+    terminal_sum = sum(
+        sampling_time_likelihood(t0, Float64[], Int[], m, pars; tℓ=tl)
+        for m in 0:terminal_cap
+    )
+    terminal_tail = conditioned_reconstructed_count_tail(terminal_cap, t0, tl, tl, pars)
+    push!(checks, (
+        "terminal count normalization",
+        isapprox(terminal_sum + terminal_tail, 1.0; atol=2e-12, rtol=1e-10),
+        terminal_sum + terminal_tail,
+        1.0,
+    ))
+
+    no_rho = ConstantRateBDParameters(1.2, 0.4, 0.5, 1.0, 0.0)
+    zero_terminal = sampling_time_likelihood(t0, Float64[], Int[], 0, no_rho; tℓ=tl)
+    positive_terminal = sampling_time_likelihood(t0, Float64[], Int[], 1, no_rho; tℓ=tl)
+    push!(checks, (
+        "rho0=0 zero terminal",
+        isapprox(zero_terminal, 1.0; atol=1e-12, rtol=1e-12),
+        zero_terminal,
+        1.0,
+    ))
+    push!(checks, (
+        "rho0=0 positive terminal",
+        isapprox(positive_terminal, 0.0; atol=1e-12, rtol=0.0),
+        positive_terminal,
+        0.0,
+    ))
+
+    vals = [
+        sampling_time_likelihood(t0, [0.75], [1], m, pars; tℓ=tl)
+        for m in 0:5
+    ]
+    finite_nonnegative = all(x -> isfinite(x) && x >= 0.0 && x <= 1.0, vals)
+    push!(checks, ("finite nonnegative bounded", finite_nonnegative, maximum(vals), 1.0))
+
+    return checks
+end
+
 function print_results(results)
     println("sampling_time_likelihood validation")
     println("-----------------------------------")
+    println("conditioning: A(t_start, t_ell) = 1")
+    println("terminal samples are counted separately from serial samples at exact continuous times")
     @printf("nsims=%d  half_width=%.4f  seed=%d\n\n", NSIMS, HALF_WIDTH, SEED)
     println("case              likelihood    brute        abs_diff     mc_est      mc_se       95% CI                  cond/hits  status")
     println("----------------  ------------  -----------  -----------  ----------  ----------  ----------------------  ---------  ------")
@@ -278,6 +331,14 @@ function print_results(results)
     println("diagnostics=true summaries")
     for row in results
         @printf("%-16s  %s\n", row.name, diagnostic_summary(row.diagnostic))
+    end
+
+    println()
+    println("deterministic endpoint checks")
+    println("check                           status  observed      expected")
+    println("------------------------------  ------  ------------  ------------")
+    for (name, ok, observed, expected) in deterministic_checks()
+        @printf("%-30s  %-6s  %12s  %12s\n", name, ok ? "ok" : "fail", fmt(observed), fmt(expected))
     end
 end
 
