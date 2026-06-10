@@ -145,6 +145,119 @@ terminal, and grouped exact serial plus terminal observations with `ρ₀ > 0`:
 julia --project=. scripts/validation/sampling_time_likelihood_validation.jl
 ```
 
+### Cached Origin-Time Likelihood Evaluation
+
+For fixed birth-death-sampling parameters, fixed grouped sampling observations,
+and a fixed terminal horizon `tℓ`, the exact sampling-time likelihood can be
+factored as
+
+```text
+L(t0) = u' G(t0, t1) h
+```
+
+where `t1` is the first serial sampling time, `u` is the single-lineage initial
+state, `G(t0, t1)` is the conditioned no-sample reconstructed propagator from
+the origin to `t1`, and `h` is the downstream likelihood vector. The vector `h`
+contains the first sampling update at `t1`, all later propagation and grouped
+sampling updates, and the terminal sampling or terminal-conditioning step. Once
+`h` has been built, changing `t0` only requires recomputing the first
+propagator.
+
+`cache_sampling_time_likelihood(...)` constructs this downstream cache for the
+same constant-rate, removal-sampling likelihood conventions as
+`sampling_time_likelihood`. Repeated calls to
+`sampling_time_likelihood(cache, t0)` or
+`sampling_time_loglikelihood(cache, t0)` then evaluate the factorized likelihood
+without rebuilding the full downstream filter. `origin_time_loglikelihood_profile`
+evaluates the cached log-likelihood on a supplied grid and returns column
+vectors for `t0`, `loglikelihood`, and `delta_loglikelihood`, relative to the
+maximum finite grid value.
+
+`origin_time_mle(cache; lower, upper, ...)` wraps the cached evaluator in a
+bounded one-dimensional optimizer for the origin time only. It maximizes
+`sampling_time_loglikelihood(cache, t0)` and therefore keeps the birth, death,
+serial sampling, removal, terminal sampling, and horizon parameters fixed. The
+cache is reused throughout the search; the full downstream likelihood chain is
+not rebuilt for each candidate origin time.
+
+If bounds are not supplied, the upper bound defaults to the previous
+floating-point value below the first sampling time, and the lower bound defaults
+to ten observed time spans before the first sampling time. These defaults are
+intended as conservative fallbacks. In analyses, prefer explicit scientific
+bounds and inspect `origin_time_loglikelihood_profile(cache, grid)` because
+origin-time likelihoods can be flat, weakly identified, or boundary dominated.
+
+A typical workflow is:
+
+```julia
+cache = cache_sampling_time_likelihood(sampling_times, sample_counts,
+                                       terminal_count, pars; tℓ=tℓ)
+profile = origin_time_loglikelihood_profile(cache, grid)
+fit = origin_time_mle(cache; lower=lower, upper=upper)
+```
+
+There is also a convenience wrapper
+`origin_time_mle(sampling_times, pars; sample_counts, terminal_count, tℓ, ...)`
+that constructs the cache and then calls the cache-based method. When
+`terminal_count` is omitted, it uses the grouped sampling-time cache and assigns
+one sample to each supplied time unless `sample_counts` is provided.
+
+Multi-parameter inference is intentionally postponed. Future estimation of
+`λ`, `μ`, `ψ`, `r`, `ρ₀`, and `t0` should use parameter transformations,
+bounds, profile likelihoods, and identifiability diagnostics rather than
+extending this one-dimensional optimizer directly.
+
+The manual cache validation script compares cached and full likelihoods over a
+grid of origin times:
+
+```bash
+julia --project=. scripts/validation/origin_time_likelihood_cache_validation.jl
+```
+
+The one-dimensional MLE validation script compares the bounded optimizer against
+a grid profile and then runs a seeded simulation diagnostic across several
+target sample sizes:
+
+```bash
+julia --project=. scripts/validation/origin_time_mle_validation.jl
+```
+
+The simulation section uses `simulate_bd` under fixed, known
+birth-death-sampling parameters and a known `t0`, then fits only the
+one-dimensional origin time. For each simulated outbreak and target sample
+size, it evaluates `first_n`, `random_n`, and `even_n` selections from the
+sampled removal times. These schemes answer different diagnostic questions:
+`first_n` preserves the original early-sample design, `random_n` checks
+reproducible subsamples from the full simulated removal-time set, and `even_n`
+checks approximately quantile-spaced timing information. This remains an
+estimator-behaviour diagnostic rather than exact simulation conditional on the
+target sample count. The reported 95% profile-likelihood interval is the grid
+set satisfying
+`loglikelihood >= maximum(loglikelihood) - 0.5 * 3.841458820694124`. This
+interval should be interpreted conditional on the fixed parameter values used in
+the cache; it does not account for uncertainty in `λ`, `μ`, `ψ`, `r`, or `ρ₀`.
+Small or weakly informative sampled-time sets can produce wide intervals,
+origin-time MLEs near the optimization bounds, or intervals that hit the profile
+grid edge. Nonfinite objectives or boundary statuses usually indicate either
+weak information or numerical/truncation issues and should be inspected with the
+replicate-level diagnostics.
+
+Origin-time inference from sampling times is strongly tied to the temporal
+geometry of the observed samples, not just to the number of sampled leaves. The
+first observed sampling time is especially influential because the optimizer's
+upper bound must lie below it and the likelihood contribution before that first
+sample is carried by the origin-to-first-sample propagator. The validation
+script therefore records replicate-level geometry fields such as the first and
+last sample times, sample span, first-sample delay from the true origin,
+first-sample gap from the fitted MLE, sampling-time quantiles, and IQR. Its
+summary and correlation tables report how absolute error, fitted origin time,
+CI width, first-sample delay, and sampling span vary across `first_n`,
+`random_n`, and `even_n` selection schemes.
+
+The default run is intentionally modest; set
+`BDUTILS_ORIGIN_TIME_MLE_NREPS` for larger manual validation runs, and
+`BDUTILS_ORIGIN_TIME_MLE_GRID_LENGTH` to tune the profile grid cost.
+
 ## Rounded Or Binned Sampling Times
 
 Rounded sampling dates should be treated as interval-censored observations, not

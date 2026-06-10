@@ -1,12 +1,84 @@
-function _falling_factorial(b::Integer, c::Integer)
-    _check_count("b", b)
-    _check_count("c", c)
-    c > b && return 0
-    out = 1
-    for k in 0:(c - 1)
-        out *= b - k
+function _binomial_coefficient(T::Type, n::Integer, k::Integer)
+    _check_count("n", n)
+    _check_count("k", k)
+    k > n && return zero(T)
+    kk = min(k, n - k)
+    out = one(T)
+    for j in 1:kk
+        out *= T(n - kk + j) / T(j)
     end
     return out
+end
+
+function _falling_factorial(T::Type, b::Integer, c::Integer)
+    _check_count("b", b)
+    _check_count("c", c)
+    c > b && return zero(T)
+    out = one(T)
+    for k in 0:(c - 1)
+        out *= T(b - k)
+    end
+    return out
+end
+
+_falling_factorial(b::Integer, c::Integer) = _falling_factorial(Float64, b, c)
+
+function _log_binomial_coefficient(T::Type, n::Integer, k::Integer)
+    _check_count("n", n)
+    _check_count("k", k)
+    k > n && return T(-Inf)
+    kk = min(k, n - k)
+    out = zero(T)
+    for j in 1:kk
+        out += log(T(n - kk + j)) - log(T(j))
+    end
+    return out
+end
+
+function _log_falling_factorial(T::Type, b::Integer, c::Integer)
+    _check_count("b", b)
+    _check_count("c", c)
+    c > b && return T(-Inf)
+    out = zero(T)
+    for k in 0:(c - 1)
+        out += log(T(b - k))
+    end
+    return out
+end
+
+function _finite_nonnegative_or_throw(label::AbstractString, value)
+    isfinite(value) && value >= zero(value) && return value
+    throw(ErrorException("$label must be finite and nonnegative; got $value."))
+end
+
+function _finite_nonnegative_vector_or_throw(label::AbstractString, values)
+    for value in values
+        _finite_nonnegative_or_throw(label, value)
+    end
+    return values
+end
+
+function _normalize_likelihood_vector!(label::AbstractString, values::AbstractVector{T}) where {T<:AbstractFloat}
+    _finite_nonnegative_vector_or_throw(label, values)
+    scale = maximum(values; init=zero(T))
+    scale > zero(T) || return zero(T)
+    values ./= scale
+    return log(scale)
+end
+
+function _log_power_nonnegative(x::T, n::Integer) where {T<:AbstractFloat}
+    _check_count("exponent", n)
+    n == 0 && return zero(T)
+    x > zero(T) && return T(n) * log(x)
+    return T(-Inf)
+end
+
+function _exp_log_nonnegative(label::AbstractString, logvalue::T) where {T<:AbstractFloat}
+    logvalue == T(-Inf) && return zero(T)
+    logvalue <= log(floatmax(T)) ||
+        throw(ErrorException("$label overflows Float64 on the probability scale; use the cached log-likelihood path."))
+    value = exp(logvalue)
+    return _finite_nonnegative_or_throw(label, value)
 end
 
 function _no_sample_reconstructed_kernel(
@@ -23,7 +95,13 @@ function _no_sample_reconstructed_kernel(
     _, tiT, tjT, tlT, pT = _promote_reconstructed_inputs(0.0, ti, tj, tℓ, pars)
     β = conditioned_reconstructed_beta_bd(zero(tiT), tiT, tjT, tlT, pT)
     γ = conditioned_reconstructed_gamma_bd(zero(tiT), tiT, tjT, tlT, pT)
-    return binomial(b - 1, a - 1) * β^a * γ^(b - a)
+    _finite_nonnegative_or_throw("conditioned reconstructed beta", β)
+    _finite_nonnegative_or_throw("conditioned reconstructed gamma", γ)
+    T = typeof(β)
+    logkernel = _log_binomial_coefficient(T, b - 1, a - 1) +
+        _log_power_nonnegative(β, a) +
+        _log_power_nonnegative(γ, b - a)
+    return _exp_log_nonnegative("no-sample reconstructed kernel", logkernel)
 end
 
 function _grouped_removal_sampling_jump(
@@ -34,9 +112,13 @@ function _grouped_removal_sampling_jump(
 )
     _check_count("b", b)
     _check_count("c", c)
-    c > b && return zero(promote_type(typeof(ψ̃), Float64))
-    coefficient = labelled_samples ? _falling_factorial(b, c) : binomial(b, c)
-    return coefficient * ψ̃^c
+    T = promote_type(typeof(ψ̃), Float64)
+    c > b && return zero(T)
+    ψT = T(ψ̃)
+    _finite_nonnegative_or_throw("transformed sampling rate", ψT)
+    logcoefficient = labelled_samples ? _log_falling_factorial(T, b, c) : _log_binomial_coefficient(T, b, c)
+    logjump = logcoefficient + _log_power_nonnegative(ψT, c)
+    return _exp_log_nonnegative("grouped removal sampling jump", logjump)
 end
 
 """
@@ -142,6 +224,205 @@ function _validate_sampling_time_likelihood_inputs(
     return nothing
 end
 
+struct SamplingTimeLikelihoodCache{T<:AbstractFloat,P<:ConstantRateBDParameters{T}}
+    sampling_times::Vector{T}
+    sample_counts::Vector{Int}
+    terminal_count::Int
+    first_sampling_time::T
+    pars::P
+    tℓ::T
+    downstream::Vector{T}
+    max_count::Int
+    downstream_log_scale::T
+    labelled_samples::Bool
+    terminal_sampling::Bool
+    terminal_condition::Symbol
+    mode::Symbol
+end
+
+function SamplingTimeLikelihoodCache(
+    sampling_times::Vector{T},
+    sample_counts::Vector{Int},
+    terminal_count::Int,
+    first_sampling_time::T,
+    pars::P,
+    tℓ::T,
+    downstream::Vector{T},
+    max_count::Int,
+    labelled_samples::Bool,
+    terminal_sampling::Bool,
+    terminal_condition::Symbol,
+    mode::Symbol,
+) where {T<:AbstractFloat,P<:ConstantRateBDParameters{T}}
+    return SamplingTimeLikelihoodCache(
+        sampling_times,
+        sample_counts,
+        terminal_count,
+        first_sampling_time,
+        pars,
+        tℓ,
+        downstream,
+        max_count,
+        zero(T),
+        labelled_samples,
+        terminal_sampling,
+        terminal_condition,
+        mode,
+    )
+end
+
+struct OriginTimeMLEResult{T<:AbstractFloat}
+    t0_hat::T
+    loglikelihood::T
+    lower::T
+    upper::T
+    converged::Bool
+    iterations::Int
+    n_evaluations::Int
+    status::Symbol
+end
+
+function _sampling_time_remaining_counts(sample_counts::AbstractVector{<:Integer}, terminal_count::Integer)
+    M = length(sample_counts)
+    remaining = zeros(Int, M + 1)
+    remaining[M + 1] = Int(terminal_count)
+    for m in M:-1:1
+        remaining[m] = remaining[m + 1] + Int(sample_counts[m])
+    end
+    return remaining
+end
+
+function _sampling_time_terminal_downstream(
+    u::T,
+    tℓ::T,
+    terminal_count::Integer,
+    after_max::Integer,
+    pars::ConstantRateBDParameters{T};
+    terminal_sampling::Bool,
+    terminal_condition::Symbol,
+) where {T<:AbstractFloat}
+    h = zeros(T, after_max + 1)
+    if terminal_sampling
+        @inbounds for a in 1:after_max
+            h[a + 1] = terminal_count_transition(u, tℓ, a, terminal_count, pars)
+        end
+        return h
+    end
+    if terminal_condition == :censored
+        η = no_sample_probability_conditioned(u, tℓ, tℓ, pars)
+        @inbounds for a in 0:after_max
+            h[a + 1] = η^a
+        end
+        return h
+    end
+    terminal_condition == :any && begin
+        fill!(h, one(T))
+        return h
+    end
+    throw(ArgumentError("unsupported terminal_condition=$terminal_condition when terminal_sampling=false; expected :censored or :any."))
+end
+
+function _cached_exact_sampling_time_downstream(
+    sampling_times::AbstractVector{T},
+    sample_counts::AbstractVector{<:Integer},
+    terminal_count::Integer,
+    pars::ConstantRateBDParameters{T},
+    tℓ::T;
+    labelled_samples::Bool,
+    terminal_sampling::Bool,
+    terminal_condition::Symbol,
+) where {T<:AbstractFloat}
+    M = length(sampling_times)
+    log_scale = zero(T)
+    remaining = _sampling_time_remaining_counts(sample_counts, terminal_count)
+    h = _sampling_time_terminal_downstream(
+        sampling_times[end],
+        tℓ,
+        terminal_count,
+        max(remaining[M + 1], 1),
+        pars;
+        terminal_sampling=terminal_sampling,
+        terminal_condition=terminal_condition,
+    )
+    log_scale += _normalize_likelihood_vector!("terminal downstream vector", h)
+
+    for m in M:-1:1
+        c = sample_counts[m]
+        before_max = max(remaining[m], 1)
+        after_max = max(remaining[m + 1], 1)
+        h_pre = zeros(T, before_max + 1)
+        ψ̃ = transformed_sampling_rate(sampling_times[m], tℓ, pars)
+        @inbounds for b in c:before_max
+            d = b - c
+            d <= after_max || continue
+            h_pre[b + 1] += _grouped_removal_sampling_jump(b, c, ψ̃; labelled_samples=labelled_samples) *
+                h[d + 1]
+        end
+        log_scale += _normalize_likelihood_vector!("sampling downstream vector", h_pre)
+        m == 1 && return h_pre, log_scale
+
+        h_prev = zeros(T, max(remaining[m], 1) + 1)
+        u = sampling_times[m - 1]
+        ti = sampling_times[m]
+        @inbounds for a in 1:(length(h_prev) - 1)
+            for b in a:before_max
+                h_prev[a + 1] += _no_sample_reconstructed_kernel(u, ti, tℓ, a, b, pars) * h_pre[b + 1]
+            end
+        end
+        log_scale += _normalize_likelihood_vector!("propagated downstream vector", h_prev)
+        h = h_prev
+    end
+    throw(ArgumentError("sampling_times must be nonempty."))
+end
+
+function _cached_grouped_sampling_time_downstream(
+    sampling_times::AbstractVector{T},
+    sample_counts::AbstractVector{<:Integer},
+    pars::ConstantRateBDParameters{T},
+    tℓ::T;
+    labelled_samples::Bool,
+    terminal_condition::Symbol,
+) where {T<:AbstractFloat}
+    M = length(sampling_times)
+    log_scale = zero(T)
+    remaining = _sampling_time_remaining_counts(sample_counts, 0)
+    h = zeros(T, 1)
+    terminal_condition == :terminated && (h[1] = one(T))
+    terminal_condition == :any && (h[1] = one(T))
+    terminal_condition in (:terminated, :any) ||
+        throw(ArgumentError("unsupported terminal_condition=$terminal_condition; expected :terminated or :any."))
+    tl_work = sampling_times[end] == tℓ ? tℓ + 16sqrt(eps(T)) * max(one(T), abs(tℓ)) : tℓ
+    log_scale += _normalize_likelihood_vector!("terminal downstream vector", h)
+
+    for m in M:-1:1
+        c = sample_counts[m]
+        before_max = remaining[m]
+        after_max = remaining[m + 1]
+        h_pre = zeros(T, before_max + 1)
+        ψ̃ = transformed_sampling_rate(sampling_times[m], tl_work, pars)
+        @inbounds for b in c:before_max
+            d = b - c
+            d <= after_max || continue
+            h_pre[b + 1] += _grouped_removal_sampling_jump(b, c, ψ̃; labelled_samples=labelled_samples) *
+                h[d + 1]
+        end
+        log_scale += _normalize_likelihood_vector!("sampling downstream vector", h_pre)
+        m == 1 && return h_pre, log_scale
+
+        h_prev = zeros(T, remaining[m] + 1)
+        u = sampling_times[m - 1]
+        ti = sampling_times[m]
+        @inbounds for a in 1:(length(h_prev) - 1)
+            for b in a:before_max
+                h_prev[a + 1] += _no_sample_reconstructed_kernel(u, ti, tl_work, a, b, pars) * h_pre[b + 1]
+            end
+        end
+        log_scale += _normalize_likelihood_vector!("propagated downstream vector", h_prev)
+        h = h_prev
+    end
+    throw(ArgumentError("sampling_times must be nonempty."))
+end
+
 function _grouped_sampling_time_filter(
     t0::Real,
     sampling_times::AbstractVector{<:Real},
@@ -243,6 +524,396 @@ function grouped_sampling_time_likelihood(
     terminal_condition == :terminated && return f[1]
     terminal_condition == :any && return sum(f)
     throw(ArgumentError("unsupported terminal_condition=$terminal_condition; expected :terminated or :any."))
+end
+
+"""
+    cache_sampling_time_likelihood(sampling_times, sample_counts, terminal_count, pars; tℓ, ...)
+
+Precompute the part of `sampling_time_likelihood` that is independent of the
+origin time `t0`. The returned `SamplingTimeLikelihoodCache` stores a
+downstream vector beginning immediately before the first grouped serial
+sampling update, so repeated evaluation only recomputes propagation from `t0`
+to the first sampling time.
+
+The cache is intentionally conservative: it supports the same constant-rate,
+single-initial-lineage, removal-sampling likelihood as `sampling_time_likelihood`
+and requires at least one serial sampling time.
+"""
+function cache_sampling_time_likelihood(
+    sampling_times::AbstractVector{<:Real},
+    sample_counts::AbstractVector{<:Integer},
+    terminal_count::Integer,
+    pars::ConstantRateBDParameters;
+    tℓ::Real,
+    labelled_samples::Bool=false,
+    terminal_sampling::Bool=true,
+    terminal_condition::Symbol=:observed,
+    atol::Real=1e-12,
+    max_count::Union{Nothing,Integer}=nothing,
+)
+    T = promote_type(
+        eltype(sampling_times),
+        typeof(tℓ),
+        typeof(atol),
+        typeof(pars.λ),
+        Float64,
+    )
+    pT = ConstantRateBDParameters{T}(T(pars.λ), T(pars.μ), T(pars.ψ), T(pars.r), T(pars.ρ₀))
+    times = T.(sampling_times)
+    counts = Int.(sample_counts)
+    terminal = Int(terminal_count)
+    tlT = T(tℓ)
+    isempty(times) && throw(ArgumentError("sampling_times must be nonempty for cached origin-time evaluation."))
+    _validate_sampling_time_likelihood_inputs(prevfloat(first(times)), times, counts, terminal, pT, tlT, max_count)
+    if !terminal_sampling && terminal != 0
+        throw(ArgumentError("terminal_count must be 0 when terminal_sampling=false."))
+    end
+    terminal_sampling && terminal_condition == :observed ||
+        !terminal_sampling && terminal_condition in (:censored, :any) ||
+        throw(ArgumentError("unsupported terminal/condition combination for sampling_time_likelihood cache."))
+    remaining = _sampling_time_remaining_counts(counts, terminal)
+    if max_count !== nothing && max_count < remaining[1]
+        throw(ArgumentError("max_count must be at least the total observed sample count."))
+    end
+    downstream, downstream_log_scale = _cached_exact_sampling_time_downstream(
+        times,
+        counts,
+        terminal,
+        pT,
+        tlT;
+        labelled_samples=labelled_samples,
+        terminal_sampling=terminal_sampling,
+        terminal_condition=terminal_condition,
+    )
+    return SamplingTimeLikelihoodCache(
+        times,
+        counts,
+        terminal,
+        first(times),
+        pT,
+        tlT,
+        downstream,
+        length(downstream) - 1,
+        downstream_log_scale,
+        labelled_samples,
+        terminal_sampling,
+        terminal_condition,
+        :sampling_time,
+    )
+end
+
+"""
+    cache_sampling_time_likelihood(sampling_times, sample_counts, pars;
+        tℓ=nothing, labelled_samples=false, terminal_condition=:terminated)
+
+Precompute the `t0`-independent downstream vector for
+`grouped_sampling_time_likelihood`.
+"""
+function cache_sampling_time_likelihood(
+    sampling_times::AbstractVector{<:Real},
+    sample_counts::AbstractVector{<:Integer},
+    pars::ConstantRateBDParameters;
+    tℓ::Union{Nothing,Real}=nothing,
+    labelled_samples::Bool=false,
+    terminal_condition::Symbol=:terminated,
+)
+    isempty(sampling_times) && throw(ArgumentError("sampling_times must be nonempty."))
+    tl = tℓ === nothing ? last(sampling_times) : tℓ
+    T = promote_type(eltype(sampling_times), typeof(tl), typeof(pars.λ), Float64)
+    pT = ConstantRateBDParameters{T}(T(pars.λ), T(pars.μ), T(pars.ψ), T(pars.r), T(pars.ρ₀))
+    times = T.(sampling_times)
+    counts = Int.(sample_counts)
+    tlT = T(tl)
+    _validate_grouped_sampling_inputs(prevfloat(first(times)), times, counts, pT, tlT)
+    terminal_condition in (:terminated, :any) ||
+        throw(ArgumentError("unsupported terminal_condition=$terminal_condition; expected :terminated or :any."))
+    downstream, downstream_log_scale = _cached_grouped_sampling_time_downstream(
+        times,
+        counts,
+        pT,
+        tlT;
+        labelled_samples=labelled_samples,
+        terminal_condition=terminal_condition,
+    )
+    return SamplingTimeLikelihoodCache(
+        times,
+        counts,
+        0,
+        first(times),
+        pT,
+        tlT,
+        downstream,
+        length(downstream) - 1,
+        downstream_log_scale,
+        labelled_samples,
+        false,
+        terminal_condition,
+        :grouped_sampling_time,
+    )
+end
+
+function _sampling_time_scaled_likelihood(cache::SamplingTimeLikelihoodCache{T}, t0::Real) where {T<:AbstractFloat}
+    isfinite(t0) || return zero(T)
+    t0T = T(t0)
+    t0T < cache.first_sampling_time || return zero(T)
+    t0T < cache.tℓ || return zero(T)
+    horizon = cache.mode == :grouped_sampling_time && last(cache.sampling_times) == cache.tℓ ?
+        cache.tℓ + 16sqrt(eps(T)) * max(one(T), abs(cache.tℓ)) :
+        cache.tℓ
+    lik = zero(T)
+    @inbounds for b in 1:cache.max_count
+        kernel = _no_sample_reconstructed_kernel(t0T, cache.first_sampling_time, horizon, 1, b, cache.pars)
+        term = kernel * cache.downstream[b + 1]
+        _finite_nonnegative_or_throw("propagator-vector product term", term)
+        lik += term
+    end
+    _finite_nonnegative_or_throw("propagator-vector product", lik)
+    return lik
+end
+
+function sampling_time_likelihood(cache::SamplingTimeLikelihoodCache{T}, t0::Real) where {T<:AbstractFloat}
+    scaled_likelihood = _sampling_time_scaled_likelihood(cache, t0)
+    scaled_likelihood > zero(T) || return zero(T)
+    loglikelihood = cache.downstream_log_scale + log(scaled_likelihood)
+    loglikelihood <= log(floatmax(T)) || return T(Inf)
+    return exp(loglikelihood)
+end
+
+function sampling_time_loglikelihood(cache::SamplingTimeLikelihoodCache{T}, t0::Real) where {T<:AbstractFloat}
+    scaled_likelihood = _sampling_time_scaled_likelihood(cache, t0)
+    scaled_likelihood > zero(T) || return T(-Inf)
+    loglikelihood = cache.downstream_log_scale + log(scaled_likelihood)
+    isfinite(loglikelihood) || throw(ErrorException("sampling-time log-likelihood must be finite after scaled cache evaluation; got $loglikelihood."))
+    return loglikelihood
+end
+
+function origin_time_loglikelihood_profile(cache::SamplingTimeLikelihoodCache, t0_grid)
+    t0s = collect(t0_grid)
+    loglikelihoods = [sampling_time_loglikelihood(cache, t0) for t0 in t0s]
+    finite_loglikelihoods = filter(isfinite, loglikelihoods)
+    max_loglikelihood = isempty(finite_loglikelihoods) ? -Inf : maximum(finite_loglikelihoods)
+    delta_loglikelihoods = isfinite(max_loglikelihood) ?
+        [isfinite(ll) ? ll - max_loglikelihood : -Inf for ll in loglikelihoods] :
+        fill(-Inf, length(loglikelihoods))
+    return (
+        t0=t0s,
+        loglikelihood=loglikelihoods,
+        delta_loglikelihood=delta_loglikelihoods,
+    )
+end
+
+function _origin_time_default_lower(cache::SamplingTimeLikelihoodCache{T}) where {T<:AbstractFloat}
+    scale_floor = sqrt(eps(T)) * max(
+        one(T),
+        abs(cache.first_sampling_time),
+        abs(last(cache.sampling_times)),
+        abs(cache.tℓ),
+    )
+    observed_span = max(
+        cache.tℓ - cache.first_sampling_time,
+        last(cache.sampling_times) - cache.first_sampling_time,
+        scale_floor,
+    )
+    return cache.first_sampling_time - T(10) * observed_span
+end
+
+function _origin_time_default_upper(cache::SamplingTimeLikelihoodCache{T}) where {T<:AbstractFloat}
+    return prevfloat(cache.first_sampling_time)
+end
+
+function _origin_time_bounds(cache::SamplingTimeLikelihoodCache{T}, lower, upper) where {T<:AbstractFloat}
+    lo = lower === nothing ? _origin_time_default_lower(cache) : T(lower)
+    hi = upper === nothing ? _origin_time_default_upper(cache) : T(upper)
+    isfinite(lo) || throw(ArgumentError("lower must be finite for origin_time_mle."))
+    isfinite(hi) || throw(ArgumentError("upper must be finite for origin_time_mle."))
+    lo < hi || throw(ArgumentError("lower must be less than upper for origin_time_mle."))
+    hi < cache.first_sampling_time ||
+        throw(ArgumentError("upper must be less than the first sampling time for origin_time_mle."))
+    return lo, hi
+end
+
+function _origin_time_search(
+    cache::SamplingTimeLikelihoodCache{T},
+    lower::T,
+    upper::T;
+    tolerance::Real=sqrt(eps(T)),
+    maxiter::Integer=1_000,
+    boundary_tol::Union{Nothing,Real}=nothing,
+) where {T<:AbstractFloat}
+    tol = T(tolerance)
+    tol > zero(T) || throw(ArgumentError("tolerance must be positive for origin_time_mle."))
+    maxiter >= 1 || throw(ArgumentError("maxiter must be positive for origin_time_mle."))
+    btol = boundary_tol === nothing ? sqrt(tol) : T(boundary_tol)
+    btol >= zero(T) || throw(ArgumentError("boundary_tol must be nonnegative for origin_time_mle."))
+
+    n_evaluations = 0
+    function objective(t0::T)
+        n_evaluations += 1
+        t0 < cache.first_sampling_time || return T(-Inf)
+        value = sampling_time_loglikelihood(cache, t0)
+        return isfinite(value) ? T(value) : T(-Inf)
+    end
+
+    φ = (sqrt(T(5)) - one(T)) / T(2)
+    a = lower
+    b = upper
+    c = b - φ * (b - a)
+    d = a + φ * (b - a)
+    fa = objective(a)
+    fb = objective(b)
+    fc = objective(c)
+    fd = objective(d)
+    iterations = 0
+
+    while iterations < maxiter && (b - a) > tol * max(one(T), abs((a + b) / T(2)))
+        iterations += 1
+        if fc < fd
+            a = c
+            c = d
+            fc = fd
+            d = a + φ * (b - a)
+            fd = objective(d)
+        else
+            b = d
+            d = c
+            fd = fc
+            c = b - φ * (b - a)
+            fc = objective(c)
+        end
+    end
+
+    mid = (a + b) / T(2)
+    fmid = objective(mid)
+    candidates = ((lower, fa), (upper, fb), (c, fc), (d, fd), (mid, fmid))
+    t0_hat, loglikelihood = candidates[1]
+    for candidate in candidates[2:end]
+        if candidate[2] > loglikelihood
+            t0_hat, loglikelihood = candidate
+        end
+    end
+
+    converged = (b - a) <= tol * max(one(T), abs(mid))
+    status = converged ? :converged : :maxiter
+    if !isfinite(loglikelihood)
+        converged = false
+        status = :nonfinite_objective
+    else
+        boundary_scale = max(one(T), abs(lower), abs(upper), upper - lower)
+        if abs(t0_hat - lower) <= btol * boundary_scale
+            status = :lower_bound
+        elseif abs(t0_hat - upper) <= btol * boundary_scale
+            status = :upper_bound
+        end
+    end
+
+    return OriginTimeMLEResult(
+        t0_hat,
+        loglikelihood,
+        lower,
+        upper,
+        converged,
+        iterations,
+        n_evaluations,
+        status,
+    )
+end
+
+"""
+    origin_time_mle(cache::SamplingTimeLikelihoodCache; lower=nothing, upper=nothing,
+        tolerance=sqrt(eps(T)), maxiter=1_000, boundary_tol=nothing)
+
+Estimate the origin time `t0` by maximizing
+`sampling_time_loglikelihood(cache, t0)` with fixed birth, death, sampling,
+removal, and terminal sampling parameters. The optimizer uses the cached
+factorized likelihood evaluator; it does not rebuild the full likelihood chain.
+
+The search is bounded and requires `upper < cache.first_sampling_time`. If no
+bounds are supplied, `upper` defaults to the previous floating-point value below
+the first sampling time and `lower` defaults to ten observed time spans before
+the first sampling time. These defaults are conservative; explicit scientific
+bounds are recommended.
+"""
+function origin_time_mle(
+    cache::SamplingTimeLikelihoodCache;
+    lower=nothing,
+    upper=nothing,
+    tolerance::Real=sqrt(eps(eltype(cache.sampling_times))),
+    maxiter::Integer=1_000,
+    boundary_tol::Union{Nothing,Real}=nothing,
+)
+    lo, hi = _origin_time_bounds(cache, lower, upper)
+    return _origin_time_search(
+        cache,
+        lo,
+        hi;
+        tolerance=tolerance,
+        maxiter=maxiter,
+        boundary_tol=boundary_tol,
+    )
+end
+
+"""
+    origin_time_mle(sampling_times, pars; sample_counts=nothing, terminal_count=nothing, kwargs...)
+
+Construct a `SamplingTimeLikelihoodCache` and call `origin_time_mle(cache; ...)`.
+When `sample_counts` is omitted, each supplied sampling time is assigned count
+one. If `terminal_count` is omitted, the grouped sampling-time cache is used;
+otherwise `tℓ` must be supplied and the exact sampling-time cache with terminal
+sampling options is used.
+"""
+function origin_time_mle(
+    sampling_times::AbstractVector{<:Real},
+    pars::ConstantRateBDParameters;
+    sample_counts=nothing,
+    terminal_count=nothing,
+    tℓ::Union{Nothing,Real}=nothing,
+    labelled_samples::Bool=false,
+    terminal_sampling::Bool=true,
+    terminal_condition::Union{Nothing,Symbol}=nothing,
+    atol::Real=1e-12,
+    max_count::Union{Nothing,Integer}=nothing,
+    lower=nothing,
+    upper=nothing,
+    tolerance::Real=sqrt(eps(Float64)),
+    maxiter::Integer=1_000,
+    boundary_tol::Union{Nothing,Real}=nothing,
+)
+    counts = sample_counts === nothing ? ones(Int, length(sampling_times)) : sample_counts
+    condition = terminal_condition === nothing ?
+        (terminal_count === nothing ? :terminated : :observed) :
+        terminal_condition
+    cache = if terminal_count === nothing
+        cache_sampling_time_likelihood(
+            sampling_times,
+            counts,
+            pars;
+            tℓ=tℓ,
+            labelled_samples=labelled_samples,
+            terminal_condition=condition,
+        )
+    else
+        tℓ === nothing && throw(ArgumentError("tℓ must be supplied when terminal_count is supplied."))
+        cache_sampling_time_likelihood(
+            sampling_times,
+            counts,
+            terminal_count,
+            pars;
+            tℓ=tℓ,
+            labelled_samples=labelled_samples,
+            terminal_sampling=terminal_sampling,
+            terminal_condition=condition,
+            atol=atol,
+            max_count=max_count,
+        )
+    end
+    return origin_time_mle(
+        cache;
+        lower=lower,
+        upper=upper,
+        tolerance=tolerance,
+        maxiter=maxiter,
+        boundary_tol=boundary_tol,
+    )
 end
 
 """
